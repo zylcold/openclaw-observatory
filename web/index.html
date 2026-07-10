@@ -283,6 +283,10 @@
     /* Loading */
     .loading { opacity: 0.5; }
 
+    /* Collapsible */
+    .card.collapsed > *:not(.card-header) { display: none; }
+    .card.collapsed .collapse-toggle { transform: rotate(-90deg); }
+
     /* Responsive */
     @media (max-width: 1200px) {
       .kpi-row { grid-template-columns: repeat(2, 1fr); }
@@ -506,13 +510,14 @@
     // ── State ──
     const state = {
       live: true,
-      timeRange: '1h',
+      timeRange: localStorage.getItem('obs_timeRange') || '1h',
       events: [],
       errors: [],
       errorFilter: 'all',
       resourceHistory: { cpu: [], mem: [] },
       prevSessions: 0,
       prevRuns: 0,
+      collapsed: JSON.parse(localStorage.getItem('obs_collapsed') || '{}'),
     };
 
     // ── Helpers ──
@@ -574,7 +579,8 @@
     async function fetchResources() {
       const res = await api('resources?limit=60');
       if (!res || !res.data) return;
-      const rows = res.data;
+      // API returns newest-first, reverse to oldest-first for chart
+      const rows = res.data.slice().reverse();
       if (!rows.length) return;
 
       const latest = rows[rows.length - 1];
@@ -587,7 +593,7 @@
         const dt = (new Date(latest.sampledAt) - new Date(prev.sampledAt)) / 1000;
         if (dt > 0) {
           const dCpu = (latest.cpuSecondsTotal || 0) - (prev.cpuSecondsTotal || 0);
-          cpuPct = Math.min(100, (dCpu / dt) * 100);
+          cpuPct = Math.min(100, Math.max(0, (dCpu / dt) * 100));
         }
       }
 
@@ -597,13 +603,13 @@
       $('res-fds').textContent = latest.openFds || 0;
       $('res-io').textContent = fmtBytes(latest.readBytesTotal || 0) + ' / ' + fmtBytes(latest.writeBytesTotal || 0);
 
-      // Build CPU history from deltas
+      // Build CPU history from deltas (rows are now oldest-first)
       const cpuHistory = [];
       for (let i = 1; i < rows.length; i++) {
         const dt = (new Date(rows[i].sampledAt) - new Date(rows[i-1].sampledAt)) / 1000;
         if (dt > 0) {
           const dCpu = (rows[i].cpuSecondsTotal || 0) - (rows[i-1].cpuSecondsTotal || 0);
-          cpuHistory.push(Math.min(100, (dCpu / dt) * 100));
+          cpuHistory.push(Math.min(100, Math.max(0, (dCpu / dt) * 100)));
         } else {
           cpuHistory.push(0);
         }
@@ -764,6 +770,39 @@
       }).join('');
     }
 
+    // ── LLM Latency from events ──
+    async function fetchLatency() {
+      const res = await api('events?limit=200');
+      if (!res || !res.data) return;
+      const events = res.data.filter(e => e.eventType === 'llm.completed' && e.payload && e.payload.durationMs);
+      if (!events.length) return;
+
+      const durations = events.map(e => e.payload.durationMs).sort((a, b) => a - b);
+      const p50 = durations[Math.floor(durations.length * 0.5)];
+      const p95 = durations[Math.floor(durations.length * 0.95)];
+      const p99 = durations[Math.floor(durations.length * 0.99)];
+
+      $('lat-p50-val').textContent = p50 >= 1000 ? (p50/1000).toFixed(1) + 's' : p50 + 'ms';
+      $('lat-p95-val').textContent = p95 >= 1000 ? (p95/1000).toFixed(1) + 's' : p95 + 'ms';
+      $('lat-p99-val').textContent = p99 >= 1000 ? (p99/1000).toFixed(1) + 's' : p99 + 'ms';
+
+      // Draw latency chart - show recent durations as scatter-like lines
+      const maxDur = Math.max(p99, 1000);
+      const chartH = 90;
+      const chartW = 400;
+      const step = chartW / Math.max(durations.length - 1, 1);
+
+      // P50 line
+      const p50Y = chartH - (p50 / maxDur) * chartH;
+      $('lat-p50').setAttribute('d', `M0,${p50Y} L${chartW},${p50Y}`);
+      // P95 line
+      const p95Y = chartH - (p95 / maxDur) * chartH;
+      $('lat-p95').setAttribute('d', `M0,${p95Y} L${chartW},${p95Y}`);
+      // P99 line
+      const p99Y = chartH - (p99 / maxDur) * chartH;
+      $('lat-p99').setAttribute('d', `M0,${p99Y} L${chartW},${p99Y}`);
+    }
+
     // ── SSE ──
     let sse;
     function connectSSE() {
@@ -777,17 +816,49 @@
 
     // ── Refresh ──
     async function refresh() {
-      await Promise.allSettled([fetchStatus(), fetchResources(), fetchModelStats(), fetchToolStats(), fetchRuns(), fetchEvents()]);
+      await Promise.allSettled([fetchStatus(), fetchResources(), fetchModelStats(), fetchToolStats(), fetchRuns(), fetchEvents(), fetchLatency()]);
+    }
+
+    // ── Collapsible sections ──
+    function initCollapsibles() {
+      document.querySelectorAll('.card').forEach((card, idx) => {
+        const sectionId = 'section-' + idx;
+        if (state.collapsed[sectionId]) card.classList.add('collapsed');
+        
+        const header = card.querySelector('.card-header');
+        if (!header) return;
+        
+        const toggle = document.createElement('span');
+        toggle.className = 'collapse-toggle';
+        toggle.innerHTML = '▾';
+        toggle.style.cssText = 'cursor:pointer;opacity:0.5;font-size:12px;transition:transform 0.2s;';
+        header.appendChild(toggle);
+        
+        toggle.addEventListener('click', (e) => {
+          e.stopPropagation();
+          card.classList.toggle('collapsed');
+          state.collapsed[sectionId] = card.classList.contains('collapsed');
+          localStorage.setItem('obs_collapsed', JSON.stringify(state.collapsed));
+          toggle.style.transform = card.classList.contains('collapsed') ? 'rotate(-90deg)' : '';
+        });
+      });
     }
 
     // ── Init ──
     function init() {
+      // Restore time range from localStorage
+      const savedRange = state.timeRange;
+      $('time-range').querySelectorAll('span').forEach(s => {
+        s.classList.toggle('active', s.dataset.range === savedRange);
+      });
+      
       // Time range
       $('time-range').addEventListener('click', e => {
         if (e.target.tagName !== 'SPAN') return;
         $('time-range').querySelectorAll('span').forEach(s => s.classList.remove('active'));
         e.target.classList.add('active');
         state.timeRange = e.target.dataset.range;
+        localStorage.setItem('obs_timeRange', state.timeRange);
         refresh();
       });
 
@@ -809,6 +880,7 @@
       refresh();
       setInterval(refresh, 15000);
       connectSSE();
+      initCollapsibles();
     }
 
     init();
