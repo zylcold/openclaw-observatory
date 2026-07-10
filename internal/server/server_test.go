@@ -38,7 +38,36 @@ func TestStatusAdvertisesFrontendCompatibility(t *testing.T) {
 	if body.Data.APIVersion != APIVersion || body.Data.SchemaVersion != storage.CurrentSchemaVersion || body.Data.BuildID == "" {
 		t.Fatalf("missing compatibility metadata: %#v", body.Data)
 	}
-	if len(body.Data.Capabilities) != 1 || body.Data.Capabilities[0] != "agent-timeline-v2" {
+	if len(body.Data.Capabilities) != len(Capabilities) || body.Data.Capabilities[0] != "agent-stats-v3" {
 		t.Fatalf("unexpected capabilities: %#v", body.Data.Capabilities)
+	}
+}
+
+func TestV3AnalyticsRoutes(t *testing.T) {
+	repo, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	handler := New(repo, slog.Default()).PublicHandler()
+	for _, path := range []string{
+		"/api/v1/agents/stats?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z",
+		"/api/v1/subagents",
+		"/api/v1/mcp/calls",
+		"/api/v1/llm/calls",
+		"/api/v1/errors/stats",
+		"/api/v1/timeseries?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z&bucket=1h",
+	} {
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, path, nil))
+		if res.Code != http.StatusOK {
+			t.Fatalf("%s returned %d: %s", path, res.Code, res.Body.String())
+		}
+	}
+
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/timeseries?bucket=2m", nil))
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("invalid bucket returned %d: %s", res.Code, res.Body.String())
 	}
 }

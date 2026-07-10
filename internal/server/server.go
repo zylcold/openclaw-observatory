@@ -20,13 +20,13 @@ import (
 )
 
 const (
-	Version    = "0.2.0"
-	APIVersion = 2
+	Version    = "0.3.0"
+	APIVersion = 3
 )
 
 var BuildID = "dev"
 
-var Capabilities = []string{"agent-timeline-v2"}
+var Capabilities = []string{"agent-stats-v3", "session-waterfall-v3", "timeseries-v3", "dashboard-config-v3", "disk-space-v3"}
 
 type Server struct {
 	repo  *storage.Repository
@@ -60,6 +60,12 @@ func (s *Server) PublicHandler() http.Handler {
 	mux.HandleFunc("GET /api/v1/sessions/", s.sessionDetail)
 	mux.HandleFunc("GET /api/v1/runs", s.runs)
 	mux.HandleFunc("GET /api/v1/runs/", s.runDetail)
+	mux.HandleFunc("GET /api/v1/agents/stats", s.agentStats)
+	mux.HandleFunc("GET /api/v1/subagents", s.subagents)
+	mux.HandleFunc("GET /api/v1/mcp/calls", s.mcpCalls)
+	mux.HandleFunc("GET /api/v1/llm/calls", s.llmCalls)
+	mux.HandleFunc("GET /api/v1/timeseries", s.timeseries)
+	mux.HandleFunc("GET /api/v1/errors/stats", s.errorStats)
 	mux.HandleFunc("GET /api/v1/resources", s.resources)
 	mux.HandleFunc("GET /api/v1/tools/stats", s.toolStats)
 	mux.HandleFunc("GET /api/v1/models/stats", s.modelStats)
@@ -205,12 +211,114 @@ func (s *Server) runDetail(w http.ResponseWriter, r *http.Request) {
 	detail(w, v, err)
 }
 func (s *Server) toolStats(w http.ResponseWriter, r *http.Request) {
-	v, e := s.repo.ToolStats(r.Context())
+	o, err := options(r)
+	if err != nil {
+		apiError(w, 400, "invalid_query", err.Error())
+		return
+	}
+	v, e := s.repo.ToolStats(r.Context(), o)
 	list(w, v, e, 200)
 }
 func (s *Server) modelStats(w http.ResponseWriter, r *http.Request) {
-	v, e := s.repo.ModelStats(r.Context())
+	o, err := options(r)
+	if err != nil {
+		apiError(w, 400, "invalid_query", err.Error())
+		return
+	}
+	v, e := s.repo.ModelStats(r.Context(), o)
 	list(w, v, e, 200)
+}
+
+func (s *Server) agentStats(w http.ResponseWriter, r *http.Request) {
+	o, err := options(r)
+	if err != nil {
+		apiError(w, 400, "invalid_query", err.Error())
+		return
+	}
+	v, e := s.repo.AgentStats(r.Context(), o)
+	list(w, v, e, 200)
+}
+
+func (s *Server) subagents(w http.ResponseWriter, r *http.Request) {
+	o, err := options(r)
+	if err != nil {
+		apiError(w, 400, "invalid_query", err.Error())
+		return
+	}
+	v, e := s.repo.ListSubagentRuns(r.Context(), o)
+	list(w, v, e, o.Limit)
+}
+
+func (s *Server) mcpCalls(w http.ResponseWriter, r *http.Request) {
+	o, err := options(r)
+	if err != nil {
+		apiError(w, 400, "invalid_query", err.Error())
+		return
+	}
+	v, e := s.repo.ListMCPCalls(r.Context(), o)
+	list(w, v, e, o.Limit)
+}
+
+func (s *Server) llmCalls(w http.ResponseWriter, r *http.Request) {
+	o, err := options(r)
+	if err != nil {
+		apiError(w, 400, "invalid_query", err.Error())
+		return
+	}
+	v, e := s.repo.ListLLMCalls(r.Context(), o)
+	list(w, v, e, o.Limit)
+}
+
+func (s *Server) errorStats(w http.ResponseWriter, r *http.Request) {
+	o, err := options(r)
+	if err != nil {
+		apiError(w, 400, "invalid_query", err.Error())
+		return
+	}
+	v, e := s.repo.ErrorStats(r.Context(), o)
+	list(w, v, e, 200)
+}
+
+func (s *Server) timeseries(w http.ResponseWriter, r *http.Request) {
+	o, err := options(r)
+	if err != nil {
+		apiError(w, 400, "invalid_query", err.Error())
+		return
+	}
+	now := time.Now().UTC()
+	if o.To == "" {
+		o.To = now.Format(time.RFC3339Nano)
+	}
+	if o.From == "" {
+		o.From = now.Add(-time.Hour).Format(time.RFC3339Nano)
+	}
+	from, _ := time.Parse(time.RFC3339, o.From)
+	to, _ := time.Parse(time.RFC3339, o.To)
+	if !from.Before(to) {
+		apiError(w, 400, "invalid_query", "from must be before to")
+		return
+	}
+	buckets := map[string]int64{"1m": 60, "5m": 300, "1h": 3600, "1d": 86400}
+	bucket := r.URL.Query().Get("bucket")
+	if bucket == "" {
+		bucket = "1m"
+	}
+	bucketSeconds, ok := buckets[bucket]
+	if !ok {
+		apiError(w, 400, "invalid_query", "bucket must be one of 1m, 5m, 1h, 1d")
+		return
+	}
+	if to.Sub(from) > time.Duration(bucketSeconds*2000)*time.Second {
+		apiError(w, 400, "invalid_query", "time range produces more than 2000 buckets")
+		return
+	}
+	v, err := s.repo.TimeSeries(r.Context(), o, bucketSeconds)
+	if err != nil {
+		apiError(w, 500, "storage_error", "query failed")
+		return
+	}
+	v["bucket"] = bucket
+	data(w, v)
 }
 
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
@@ -265,7 +373,7 @@ func options(r *http.Request) (storage.ListOptions, error) {
 			}
 		}
 	}
-	return storage.ListOptions{Limit: n, InstanceID: q.Get("instanceId"), From: q.Get("from"), To: q.Get("to"), Status: q.Get("status")}, nil
+	return storage.ListOptions{Limit: n, InstanceID: q.Get("instanceId"), AgentID: q.Get("agentId"), From: q.Get("from"), To: q.Get("to"), Status: q.Get("status")}, nil
 }
 
 func list(w http.ResponseWriter, v []map[string]any, err error, limit int) {
@@ -300,7 +408,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -337,7 +445,7 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	emit("openclaw_tool_errors_total", "counter", "Tool errors.", snap.ToolErrors)
 	emit("openclaw_monitor_events_received_total", "counter", "Accepted unique events.", snap.Received)
 	emit("openclaw_monitor_events_dropped_total", "counter", "Plugin or monitor drops.", snap.Dropped)
-	resources := map[string]string{"cpuSecondsTotal": "openclaw_process_cpu_seconds_total", "residentMemoryBytes": "openclaw_process_resident_memory_bytes", "virtualMemoryBytes": "openclaw_process_virtual_memory_bytes", "threads": "openclaw_process_threads", "openFds": "openclaw_process_open_fds", "readBytesTotal": "openclaw_process_read_bytes_total", "writeBytesTotal": "openclaw_process_write_bytes_total"}
+	resources := map[string]string{"cpuSecondsTotal": "openclaw_process_cpu_seconds_total", "residentMemoryBytes": "openclaw_process_resident_memory_bytes", "virtualMemoryBytes": "openclaw_process_virtual_memory_bytes", "threads": "openclaw_process_threads", "openFds": "openclaw_process_open_fds", "readBytesTotal": "openclaw_process_read_bytes_total", "writeBytesTotal": "openclaw_process_write_bytes_total", "diskTotalBytes": "openclaw_host_disk_total_bytes", "diskAvailableBytes": "openclaw_host_disk_available_bytes"}
 	for kind, name := range resources {
 		var rows []storage.MetricRow
 		for _, row := range snap.Resources {

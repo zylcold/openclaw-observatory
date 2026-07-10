@@ -88,10 +88,34 @@ func alive(pid int) bool {
 }
 
 func sample(ctx context.Context, pid int) (map[string]any, error) {
+	var result map[string]any
+	var err error
 	if runtime.GOOS == "linux" {
-		return sampleLinux(pid)
+		result, err = sampleLinux(pid)
+	} else {
+		result, err = sampleDarwin(ctx, pid)
 	}
-	return sampleDarwin(ctx, pid)
+	if err != nil {
+		return nil, err
+	}
+	if total, available, diskErr := diskSpace(); diskErr == nil {
+		result["diskTotalBytes"] = total
+		result["diskAvailableBytes"] = available
+	}
+	return result, nil
+}
+
+func diskSpace() (int64, int64, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return 0, 0, err
+	}
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(home, &stat); err != nil {
+		return 0, 0, err
+	}
+	blockSize := uint64(stat.Bsize)
+	return int64(stat.Blocks * blockSize), int64(stat.Bavail * blockSize), nil
 }
 
 func sampleDarwin(ctx context.Context, pid int) (map[string]any, error) {
