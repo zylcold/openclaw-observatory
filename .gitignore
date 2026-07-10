@@ -1,0 +1,15 @@
+.DS_Store
+.idea/
+.vscode/
+bin/
+dist/
+coverage/
+node_modules/
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.pid
+*.sock
+deploy/grafana/data/
+deploy/prometheus/data/

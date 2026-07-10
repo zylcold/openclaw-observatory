@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenClaw Observatory"
+  short_description: "Inspect local OpenClaw runtime health and activity"
+  default_prompt: "Use $openclaw-observatory to diagnose the current OpenClaw runtime status and recent failures."

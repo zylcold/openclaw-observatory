@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>OpenClaw Observatory</title>
+  <style>
+    :root{color-scheme:dark;--bg:#081017;--card:#101d27;--muted:#8ba1b2;--ok:#57d38c;--bad:#ff6b6b;--line:#223746}
+    *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0,#123044,var(--bg) 40%);font:14px system-ui;color:#e6f0f5}
+    main{max-width:1180px;margin:auto;padding:28px}h1{font-size:26px;margin:0 0 6px}.sub{color:var(--muted);margin-bottom:24px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}.card{background:rgba(16,29,39,.92);border:1px solid var(--line);border-radius:12px;padding:16px}
+    .label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.08em}.value{font-size:28px;margin-top:8px}.ok{color:var(--ok)}.bad{color:var(--bad)}
+    section{margin-top:22px}table{width:100%;border-collapse:collapse;background:rgba(16,29,39,.92);border-radius:12px;overflow:hidden}th,td{text-align:left;padding:10px;border-bottom:1px solid var(--line)}th{color:var(--muted)}code{font-size:12px}.empty{color:var(--muted)}
+  </style>
+</head>
+<body><main><h1>OpenClaw Observatory</h1><div class="sub">Local runtime metadata · live via SSE</div>
+  <div class="grid"><div class="card"><div class="label">Gateway</div><div id="gateway" class="value">—</div></div><div class="card"><div class="label">Events</div><div id="events" class="value">0</div></div><div class="card"><div class="label">Active sessions</div><div id="sessions" class="value">0</div></div><div class="card"><div class="label">Active runs</div><div id="runs" class="value">0</div></div><div class="card"><div class="label">Database</div><div id="db" class="value">0 MB</div></div></div>
+  <section><h2>Recent events</h2><table><thead><tr><th>Time</th><th>Type</th><th>Instance</th><th>Source</th></tr></thead><tbody id="timeline"><tr><td colspan="4" class="empty">Waiting for events…</td></tr></tbody></table></section>
+</main><script>
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function refresh(){const [s,e]=await Promise.all([fetch('/api/v1/status').then(r=>r.json()),fetch('/api/v1/events?limit=30').then(r=>r.json())]);
+ const up=(s.data.instances||[]).some(x=>x.status==='up'); gateway.textContent=up?'UP':'DOWN';gateway.className='value '+(up?'ok':'bad');
+ events.textContent=s.data.counts.events||0;sessions.textContent=s.data.activeSessions||0;runs.textContent=s.data.activeRuns||0;db.textContent=((s.data.databaseBytes||0)/1048576).toFixed(1)+' MB';render(e.data||[])}
+function render(rows){timeline.innerHTML=rows.length?rows.map(x=>`<tr><td>${esc(x.occurredAt)}</td><td><code>${esc(x.eventType)}</code></td><td>${esc(x.instanceId)}</td><td>${esc(x.source)}</td></tr>`).join(''):'<tr><td colspan="4" class="empty">No events yet</td></tr>'}
+refresh().catch(console.error);const es=new EventSource('/api/v1/stream');es.addEventListener('monitor-event',()=>refresh().catch(console.error));setInterval(()=>refresh().catch(console.error),15000);
+</script></body></html>

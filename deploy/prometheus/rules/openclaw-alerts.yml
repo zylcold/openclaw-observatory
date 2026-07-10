@@ -1,0 +1,39 @@
+groups:
+  - name: openclaw-observatory
+    rules:
+      # Initial defaults: tune all thresholds for the host and workload.
+      - alert: OpenClawGatewayDown
+        expr: openclaw_gateway_up == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: OpenClaw Gateway is down
+          description: "Instance {{ $labels.instance }} has been down for two minutes."
+
+      - alert: OpenClawHighMemory
+        expr: openclaw_process_resident_memory_bytes > 2147483648
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: OpenClaw process RSS is above the initial 2 GiB threshold
+
+      - alert: OpenClawHighLLMErrorRate
+        expr: sum(rate(openclaw_llm_requests_total{status="failed"}[5m])) / clamp_min(sum(rate(openclaw_llm_requests_total[5m])), 0.001) > 0.10
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: OpenClaw LLM error rate is above the initial 10% threshold
+
+      - alert: OpenClawToolErrorSpike
+        expr: sum(increase(openclaw_tool_errors_total[5m])) > 5
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: OpenClaw Tool errors exceeded the initial spike threshold
+
+      - alert: OpenClawMonitorDroppingEvents
+        expr: sum(increase(openclaw_monitor_events_dropped_total[10m])) > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: OpenClaw Observatory is dropping events

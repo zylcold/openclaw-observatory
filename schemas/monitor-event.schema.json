@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw-observatory.local/schemas/monitor-event.schema.json",
+  "title": "OpenClaw Observatory Monitor Event",
+  "description": "Protocol v1 metadata event. Serialized size is additionally limited to 16 KiB by sender and receiver.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "eventType",
+    "occurredAt",
+    "instanceId",
+    "producerId",
+    "sequence",
+    "source",
+    "payload"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "eventId": { "type": "string", "format": "uuid", "maxLength": 36 },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "gateway.started", "gateway.heartbeat", "gateway.stopped", "gateway.crashed",
+        "session.started", "session.completed", "session.failed",
+        "agent.started", "agent.completed", "agent.failed",
+        "llm.started", "llm.completed", "llm.failed", "llm.retried",
+        "tool.started", "tool.completed", "tool.failed",
+        "mcp.started", "mcp.completed", "mcp.failed",
+        "subagent.started", "subagent.completed", "subagent.failed",
+        "resource.sampled", "monitor.events_dropped", "monitor.plugin_error"
+      ]
+    },
+    "occurredAt": { "type": "string", "format": "date-time", "maxLength": 35 },
+    "monotonicTimeNs": { "type": "integer", "minimum": 0 },
+    "instanceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "producerId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "processId": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "source": { "enum": ["plugin", "daemon"] },
+    "payload": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": { "type": "string", "maxLength": 64, "pattern": "^[A-Za-z][A-Za-z0-9_]*$" },
+      "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+    }
+  },
+  "$defs": {
+    "jsonValue": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "string", "maxLength": 4096 },
+        {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/jsonValue" }
+        },
+        {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": { "type": "string", "maxLength": 64 },
+          "additionalProperties": { "$ref": "#/$defs/jsonValue" }
+        }
+      ]
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "eventId": "12d1db67-29c2-4c08-a106-d7b605f68fef",
+      "eventType": "agent.started",
+      "occurredAt": "2026-07-10T08:30:00.000Z",
+      "instanceId": "local-a15f19b2e17d3b2c",
+      "producerId": "plugin-34c546db-713d-4e9b-b563-3f2a489779e2",
+      "processId": 10207,
+      "sequence": 41,
+      "source": "plugin",
+      "payload": {
+        "runId": "run_01JZZNQ4J4Q3EJ8JESR8N4YQPK",
+        "sessionId": "session_01JZZNPAW4J10DQS75A2SM4A4R",
+        "provider": "openai",
+        "model": "gpt-5"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "eventId": "b89a1f31-2dc4-4513-9545-f074c7cb61fa",
+      "eventType": "tool.completed",
+      "occurredAt": "2026-07-10T08:30:02.215Z",
+      "instanceId": "local-a15f19b2e17d3b2c",
+      "producerId": "plugin-34c546db-713d-4e9b-b563-3f2a489779e2",
+      "processId": 10207,
+      "sequence": 44,
+      "source": "plugin",
+      "payload": {
+        "runId": "run_01JZZNQ4J4Q3EJ8JESR8N4YQPK",
+        "toolCallId": "call_01JZZNQ5YV8N3J8QP1FRQMZK9V",
+        "toolName": "web_search",
+        "toolSource": "core",
+        "durationMs": 2150,
+        "status": "completed"
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "eventId": "4db4c8ae-6813-4a5b-a498-3b6de78d32ef",
+      "eventType": "resource.sampled",
+      "occurredAt": "2026-07-10T08:30:05.000Z",
+      "instanceId": "local-a15f19b2e17d3b2c",
+      "producerId": "daemon-0d5edbd3-4b48-468d-987a-081fc04991e4",
+      "processId": 10207,
+      "sequence": 5,
+      "source": "daemon",
+      "payload": {
+        "cpuSecondsTotal": 82.17,
+        "residentMemoryBytes": 318767104,
+        "virtualMemoryBytes": 4387921920,
+        "threads": 14,
+        "openFds": 108
+      }
+    }
+  ]
+}

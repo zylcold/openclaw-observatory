@@ -1,0 +1,19 @@
+{
+  "name": "@zylcold/openclaw-observatory-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Privacy-safe OpenClaw runtime event adapter for OpenClaw Observatory",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.6.11"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": { "optional": true }
+  },
+  "openclaw": {
+    "extensions": ["./index.js"]
+  }
+}

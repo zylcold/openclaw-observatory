@@ -1,0 +1,29 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    { "id": 1, "type": "stat", "title": "Gateway Status", "gridPos": {"h":4,"w":4,"x":0,"y":0}, "targets": [{"refId":"A","expr":"max(openclaw_gateway_up)","legendFormat":"Gateway"}], "fieldConfig": {"defaults":{"mappings":[{"type":"value","options":{"0":{"text":"DOWN","color":"red"},"1":{"text":"UP","color":"green"}}}],"color":{"mode":"thresholds"},"thresholds":{"mode":"absolute","steps":[{"color":"red","value":null},{"color":"green","value":1}]}},"overrides":[]} },
+    { "id": 2, "type": "stat", "title": "Uptime", "gridPos": {"h":4,"w":4,"x":4,"y":0}, "targets": [{"refId":"A","expr":"max(openclaw_gateway_uptime_seconds)"}], "fieldConfig":{"defaults":{"unit":"s"},"overrides":[]} },
+    { "id": 3, "type": "stat", "title": "Active Sessions", "gridPos": {"h":4,"w":4,"x":8,"y":0}, "targets": [{"refId":"A","expr":"sum(openclaw_sessions_active)"}] },
+    { "id": 4, "type": "stat", "title": "Active Agent Runs", "gridPos": {"h":4,"w":4,"x":12,"y":0}, "targets": [{"refId":"A","expr":"sum(openclaw_agent_runs_active)"}] },
+    { "id": 5, "type": "stat", "title": "Tokens Today", "gridPos": {"h":4,"w":4,"x":16,"y":0}, "targets": [{"refId":"A","expr":"sum(increase(openclaw_llm_tokens_total[24h]))"}] },
+    { "id": 6, "type": "stat", "title": "Cost Today", "gridPos": {"h":4,"w":4,"x":20,"y":0}, "targets": [{"refId":"A","expr":"sum(increase(openclaw_llm_cost_usd_total[24h]))"}], "fieldConfig":{"defaults":{"unit":"currencyUSD"},"overrides":[]} },
+    { "id": 7, "type": "timeseries", "title": "RSS / Virtual Memory", "gridPos": {"h":8,"w":12,"x":0,"y":4}, "targets": [{"refId":"A","expr":"openclaw_process_resident_memory_bytes","legendFormat":"RSS {{instance}}"},{"refId":"B","expr":"openclaw_process_virtual_memory_bytes","legendFormat":"VM {{instance}}"}], "fieldConfig":{"defaults":{"unit":"bytes"},"overrides":[]} },
+    { "id": 8, "type": "timeseries", "title": "LLM Requests", "gridPos": {"h":8,"w":12,"x":12,"y":4}, "targets": [{"refId":"A","expr":"sum by (provider,model,status) (rate(openclaw_llm_requests_total[5m]))","legendFormat":"{{provider}} / {{model}} / {{status}}"}] },
+    { "id": 9, "type": "timeseries", "title": "Tool Calls and Errors", "gridPos": {"h":8,"w":12,"x":0,"y":12}, "targets": [{"refId":"A","expr":"sum by (tool,status) (rate(openclaw_tool_calls_total[5m]))","legendFormat":"{{tool}} {{status}}"},{"refId":"B","expr":"sum by (tool) (rate(openclaw_tool_errors_total[5m]))","legendFormat":"{{tool}} errors"}] },
+    { "id": 10, "type": "timeseries", "title": "Restarts and Dropped Events", "gridPos": {"h":8,"w":12,"x":12,"y":12}, "targets": [{"refId":"A","expr":"sum(increase(openclaw_gateway_restarts_total[1h]))","legendFormat":"restarts"},{"refId":"B","expr":"sum(increase(openclaw_monitor_events_dropped_total[1h]))","legendFormat":"dropped"}] }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 41,
+  "tags": ["openclaw", "observability", "local-first"],
+  "templating": {"list":[]},
+  "time": {"from":"now-6h","to":"now"},
+  "timezone": "browser",
+  "title": "OpenClaw Observatory Overview",
+  "uid": "openclaw-observatory",
+  "version": 1
+}

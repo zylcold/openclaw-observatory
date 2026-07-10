@@ -1,0 +1,19 @@
+{
+  "id": "openclaw-observatory",
+  "name": "OpenClaw Observatory",
+  "description": "Forwards bounded privacy-safe runtime metadata to the local Observatory daemon.",
+  "enabledByDefault": false,
+  "activation": { "onStartup": true },
+  "skills": ["./skills"],
+  "contracts": { "tools": ["observatory_query"] },
+  "toolMetadata": { "observatory_query": { "optional": true } },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "socketPath": { "type": "string", "maxLength": 1024 },
+      "queueCapacity": { "type": "integer", "minimum": 100, "maximum": 50000 },
+      "flushIntervalMs": { "type": "integer", "minimum": 50, "maximum": 5000 }
+    }
+  }
+}
