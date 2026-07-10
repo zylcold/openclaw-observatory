@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>OpenClaw Observatory</title>
   <style>
     :root {
@@ -35,6 +35,11 @@
       --transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    html {
+      touch-action: manipulation;
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+    }
     body {
       background:
         radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0,200,150,0.04), transparent),
@@ -46,6 +51,8 @@
       line-height: 1.5;
       -webkit-font-smoothing: antialiased;
       min-height: 100vh;
+      overscroll-behavior: none;
+      touch-action: manipulation;
     }
     .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
     .muted { color: var(--muted); }
