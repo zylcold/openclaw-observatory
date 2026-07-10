@@ -11,6 +11,7 @@ import (
 type ListOptions struct {
 	Limit      int
 	InstanceID string
+	AgentID    string
 	From       string
 	To         string
 	EventType  string
@@ -38,6 +39,10 @@ func (r *Repository) ListSessions(ctx context.Context, opts ListOptions) ([]map[
     started_at AS startedAt,ended_at AS endedAt,end_reason AS endReason,message_count AS messageCount FROM sessions WHERE 1=1`
 	var args []any
 	q, args = filters(q, args, o, "started_at", true)
+	if o.AgentID != "" {
+		q += ` AND COALESCE(NULLIF(agent_id,''),'unknown')=?`
+		args = append(args, o.AgentID)
+	}
 	q += ` ORDER BY COALESCE(started_at,ended_at) DESC LIMIT ?`
 	args = append(args, o.Limit)
 	return queryMaps(ctx, r.db, q, args...)
@@ -51,6 +56,10 @@ func (r *Repository) ListRuns(ctx context.Context, opts ListOptions) ([]map[stri
     started_at AS startedAt,ended_at AS endedAt,duration_ms AS durationMs,error_category AS errorCategory FROM agent_runs WHERE 1=1`
 	var args []any
 	q, args = filters(q, args, o, "started_at", true)
+	if o.AgentID != "" {
+		q += ` AND COALESCE(NULLIF(agent_runs.agent_id,''),NULLIF((SELECT agent_id FROM subagent_runs WHERE subagent_runs.instance_id=agent_runs.instance_id AND subagent_runs.subagent_id=agent_runs.run_id LIMIT 1),''),NULLIF((SELECT agent_id FROM sessions WHERE sessions.instance_id=agent_runs.instance_id AND sessions.session_id=agent_runs.session_id LIMIT 1),''),'unknown')=?`
+		args = append(args, o.AgentID)
+	}
 	q += ` ORDER BY COALESCE(started_at,ended_at) DESC LIMIT ?`
 	args = append(args, o.Limit)
 	return queryMaps(ctx, r.db, q, args...)
@@ -60,7 +69,8 @@ func (r *Repository) ListResources(ctx context.Context, opts ListOptions) ([]map
 	o := opts.normalized()
 	q := `SELECT id,event_id AS eventId,instance_id AS instanceId,process_id AS processId,sampled_at AS sampledAt,
     cpu_seconds_total AS cpuSecondsTotal,resident_memory_bytes AS residentMemoryBytes,virtual_memory_bytes AS virtualMemoryBytes,
-    threads,open_fds AS openFds,read_bytes AS readBytesTotal,write_bytes AS writeBytesTotal FROM resource_samples WHERE 1=1`
+    threads,open_fds AS openFds,read_bytes AS readBytesTotal,write_bytes AS writeBytesTotal,
+    disk_total_bytes AS diskTotalBytes,disk_available_bytes AS diskAvailableBytes FROM resource_samples WHERE 1=1`
 	var args []any
 	q, args = filters(q, args, o, "sampled_at", false)
 	q += ` ORDER BY sampled_at DESC LIMIT ?`
@@ -118,6 +128,31 @@ func (r *Repository) SessionDetail(ctx context.Context, id string) (map[string]a
 		return nil, err
 	}
 	rows[0]["runs"] = runs
+	timeline, err := queryMaps(ctx, r.db, `SELECT * FROM (
+      SELECT 'llm' AS kind,l.call_id AS id,l.run_id AS runId,COALESCE(NULLIF(l.model,''),'unknown') AS label,
+        l.provider,l.model,NULL AS toolName,l.status,l.started_at AS startedAt,l.ended_at AS endedAt,l.duration_ms AS durationMs,
+        l.error_category AS errorCategory,l.input_tokens AS inputTokens,l.output_tokens AS outputTokens,
+        l.cache_read_tokens AS cacheReadTokens,l.cache_write_tokens AS cacheWriteTokens,l.cost_usd AS costUsd
+      FROM llm_calls l WHERE l.session_id=?
+      UNION ALL
+      SELECT 'tool',t.tool_call_id,t.run_id,COALESCE(NULLIF(t.tool_name,''),'unknown'),
+        NULL,NULL,t.tool_name,t.status,t.started_at,t.ended_at,t.duration_ms,t.error_category,NULL,NULL,NULL,NULL,NULL
+      FROM tool_calls t WHERE t.session_id=?
+      UNION ALL
+      SELECT 'mcp',m.call_id,m.run_id,COALESCE(NULLIF(m.tool_name,''),'unknown'),
+        NULL,NULL,m.tool_name,m.status,m.started_at,m.ended_at,m.duration_ms,m.error_category,NULL,NULL,NULL,NULL,NULL
+      FROM mcp_calls m WHERE m.session_id=?
+      UNION ALL
+      SELECT 'subagent',sr.subagent_id,sr.parent_run_id,COALESCE(NULLIF(sr.agent_id,''),'unknown'),
+        sr.provider,sr.model,NULL,sr.status,sr.started_at,sr.ended_at,
+        CASE WHEN sr.started_at IS NOT NULL AND sr.ended_at IS NOT NULL THEN 1000.0*(julianday(sr.ended_at)-julianday(sr.started_at))*86400.0 END,
+        CASE WHEN sr.status='failed' THEN COALESCE(NULLIF(sr.outcome,''),'unknown') END,NULL,NULL,NULL,NULL,NULL
+      FROM subagent_runs sr WHERE sr.parent_run_id IN (SELECT run_id FROM agent_runs WHERE session_id=?)
+    ) WHERE startedAt IS NOT NULL ORDER BY startedAt,id LIMIT 2000`, id, id, id, id)
+	if err != nil {
+		return nil, err
+	}
+	rows[0]["timeline"] = timeline
 	return rows[0], nil
 }
 
@@ -148,27 +183,13 @@ func (r *Repository) RunDetail(ctx context.Context, id string) (map[string]any, 
 	return rows[0], nil
 }
 
-func (r *Repository) ToolStats(ctx context.Context) ([]map[string]any, error) {
-	return queryMaps(ctx, r.db, `SELECT instance_id AS instanceId,COALESCE(NULLIF(tool_name,''),'unknown') AS tool,
-    COUNT(*) AS calls,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS errors,AVG(duration_ms) AS averageDurationMs,MAX(duration_ms) AS maxDurationMs
-    FROM tool_calls GROUP BY instance_id,tool_name ORDER BY calls DESC LIMIT 200`)
-}
-
-func (r *Repository) ModelStats(ctx context.Context) ([]map[string]any, error) {
-	return queryMaps(ctx, r.db, `SELECT instance_id AS instanceId,COALESCE(NULLIF(provider,''),'unknown') AS provider,COALESCE(NULLIF(model,''),'unknown') AS model,
-	    COUNT(*) AS requests,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS errors,SUM(input_tokens) AS inputTokens,SUM(output_tokens) AS outputTokens,
-	    SUM(cache_read_tokens) AS cacheReadTokens,SUM(cache_write_tokens) AS cacheWriteTokens,
-	    SUM(cost_usd) AS costUsd,AVG(duration_ms) AS averageDurationMs FROM llm_calls GROUP BY instance_id,provider,model
-	    ORDER BY SUM(input_tokens+output_tokens+cache_read_tokens+cache_write_tokens) DESC,requests DESC LIMIT 200`)
-}
-
 func (r *Repository) Status(ctx context.Context) (map[string]any, error) {
 	instances, err := r.ListInstances(ctx)
 	if err != nil {
 		return nil, err
 	}
 	counts := map[string]int64{}
-	for _, table := range []string{"events", "sessions", "agent_runs", "llm_calls", "tool_calls", "mcp_calls", "resource_samples"} {
+	for _, table := range []string{"events", "sessions", "agent_runs", "subagent_runs", "llm_calls", "tool_calls", "mcp_calls", "resource_samples"} {
 		n, err := r.Count(ctx, table)
 		if err != nil {
 			return nil, err
@@ -265,14 +286,15 @@ func (r *Repository) Metrics(ctx context.Context, nowUnix float64) (MetricsSnaps
 		*item.dst = rows
 	}
 	res, err := queryMaps(ctx, r.db, `SELECT r.instance_id AS instanceId,r.cpu_seconds_total AS cpuSecondsTotal,r.resident_memory_bytes AS residentMemoryBytes,
-    r.virtual_memory_bytes AS virtualMemoryBytes,r.threads,r.open_fds AS openFds,r.read_bytes AS readBytesTotal,r.write_bytes AS writeBytesTotal
+	    r.virtual_memory_bytes AS virtualMemoryBytes,r.threads,r.open_fds AS openFds,r.read_bytes AS readBytesTotal,r.write_bytes AS writeBytesTotal,
+	    r.disk_total_bytes AS diskTotalBytes,r.disk_available_bytes AS diskAvailableBytes
     FROM resource_samples r JOIN (SELECT instance_id,MAX(sampled_at) t FROM resource_samples GROUP BY instance_id) x ON x.instance_id=r.instance_id AND x.t=r.sampled_at`)
 	if err != nil {
 		return s, err
 	}
 	for _, m := range res {
 		instance := fmt.Sprint(m["instanceId"])
-		for _, k := range []string{"cpuSecondsTotal", "residentMemoryBytes", "virtualMemoryBytes", "threads", "openFds", "readBytesTotal", "writeBytesTotal"} {
+		for _, k := range []string{"cpuSecondsTotal", "residentMemoryBytes", "virtualMemoryBytes", "threads", "openFds", "readBytesTotal", "writeBytesTotal", "diskTotalBytes", "diskAvailableBytes"} {
 			if v, ok := toFloat(m[k]); ok {
 				s.Resources = append(s.Resources, MetricRow{Labels: map[string]string{"instance": instance, "kind": k}, Value: v})
 			}
