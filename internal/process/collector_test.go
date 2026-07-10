@@ -10,3 +10,10 @@ func TestParseCPUTime(t *testing.T) {
 		}
 	}
 }
+
+func TestDiskSpace(t *testing.T) {
+	total, available, err := diskSpace()
+	if err != nil || total <= 0 || available < 0 || available > total {
+		t.Fatalf("unexpected disk space total=%d available=%d err=%v", total, available, err)
+	}
+}

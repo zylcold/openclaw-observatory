@@ -129,7 +129,9 @@
         "residentMemoryBytes": 318767104,
         "virtualMemoryBytes": 4387921920,
         "threads": 14,
-        "openFds": 108
+        "openFds": 108,
+        "diskTotalBytes": 494384795648,
+        "diskAvailableBytes": 18468327424
       }
     }
   ]

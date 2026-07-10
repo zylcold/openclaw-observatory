@@ -1,6 +1,6 @@
 package storage
 
-const CurrentSchemaVersion = 3
+const CurrentSchemaVersion = 5
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -211,4 +211,20 @@ SET agent_id = COALESCE(
    WHERE sr.instance_id = agent_runs.instance_id AND sr.subagent_id = agent_runs.run_id LIMIT 1)
 )
 WHERE agent_id IS NULL OR agent_id = '';
+`
+
+const schemaV4 = `
+CREATE INDEX IF NOT EXISTS idx_runs_time_agent ON agent_runs(started_at,agent_id,instance_id);
+CREATE INDEX IF NOT EXISTS idx_llm_time ON llm_calls(started_at,instance_id,run_id);
+CREATE INDEX IF NOT EXISTS idx_llm_session_time ON llm_calls(session_id,started_at);
+CREATE INDEX IF NOT EXISTS idx_tools_time ON tool_calls(started_at,instance_id,run_id);
+CREATE INDEX IF NOT EXISTS idx_tools_session_time ON tool_calls(session_id,started_at);
+CREATE INDEX IF NOT EXISTS idx_mcp_time ON mcp_calls(started_at,instance_id,run_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_session_time ON mcp_calls(session_id,started_at);
+CREATE INDEX IF NOT EXISTS idx_subagent_time ON subagent_runs(started_at,instance_id,agent_id);
+`
+
+const schemaV5 = `
+ALTER TABLE resource_samples ADD COLUMN disk_total_bytes INTEGER;
+ALTER TABLE resource_samples ADD COLUMN disk_available_bytes INTEGER;
 `

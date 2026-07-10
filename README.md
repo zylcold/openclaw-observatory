@@ -156,8 +156,12 @@ must not be exposed to an untrusted network.
 | `GET /metrics` | Low-cardinality Prometheus exposition |
 | `GET /api/v1/status` | Gateway, daemon, database, and queue summary |
 | `GET /api/v1/instances` | Observed OpenClaw instances |
-| `GET /api/v1/sessions[/{id}]` | Session list/detail |
+| `GET /api/v1/sessions[/{id}]` | Session list and waterfall detail |
 | `GET /api/v1/runs[/{id}]` | Agent run list/detail |
+| `GET /api/v1/agents/stats` | Agent comparison statistics |
+| `GET /api/v1/subagents`, `GET /api/v1/mcp/calls` | Subagent and MCP detail |
+| `GET /api/v1/timeseries` | SQLite-bucketed historical trends |
+| `GET /api/v1/errors/stats` | Errors grouped by source/category |
 | `GET /api/v1/resources` | Resource samples |
 | `GET /api/v1/tools/stats` | Aggregated tool statistics |
 | `GET /api/v1/models/stats` | Aggregated model statistics |
@@ -165,7 +169,7 @@ must not be exposed to an untrusted network.
 | `GET /api/v1/stream` | One-way SSE event stream |
 
 All collection and query timestamps are UTC RFC3339. List endpoints accept
-`limit`, `cursor`, `from`, `to`, and `instanceId` where applicable. See
+`limit`, `cursor`, `from`, `to`, `instanceId`, and `agentId` where applicable. See
 [`docs/070-api-design.md`](docs/070-api-design.md).
 
 ## Privacy and security

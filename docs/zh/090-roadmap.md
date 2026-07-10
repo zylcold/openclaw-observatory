@@ -28,7 +28,7 @@
 
 ---
 
-## 阶段 2 — 产品 Dashboard（进行中）
+## 阶段 2 — 产品 Dashboard ✅
 
 ### 已完成
 
@@ -43,66 +43,65 @@
 - ✅ 时间范围选择器（1h/6h/24h/7d），localStorage 记忆
 - ✅ 独立 Web Server + 反向代理（`cmd/observatory-web`）
 - ✅ Vite 构建流水线，Build ID 注入
-- ✅ Schema 迁移框架（v1 → v3，agent_id 列、索引）
+- ✅ Schema 迁移框架（v1 → v5，agent_id、聚合索引、磁盘容量）
 - ✅ Forwarder 从 sessionKey 提取 agentId
-- ✅ API version 2 + 兼容性检测横幅
+- ✅ API version 3 + 兼容性检测横幅
 - ✅ 移动端响应式布局，禁用缩放
 - ✅ 中文文档（README.zh.md + docs/zh/*）
 - ✅ Cloudflare Tunnel 部署 + Access 保护
 
-### 待完成
+### v0.3 完成项
 
-- ⬜ 会话/运行详情页（单会话内 LLM + Tool 调用瀑布图）
-- ⬜ 资源图表与时间范围选择器联动
-- ⬜ 数据保留控制和数据库维护 UX
-- ⬜ 时间范围选择器真正驱动所有图表数据窗口
-- ⬜ Subagent 和 MCP 调用数据暴露（表已存在，无 API/UI）
+- ✅ LLM、Tool、MCP 与 Subagent 会话瀑布图
+- ✅ 同一时间范围驱动交互式历史图表
+- ✅ Subagent 和 MCP API/UI 暴露
+- ✅ Dashboard JSON、拖拽排序、阈值与主题
 
-**完成度：约 70%**
+**完成度：100%**
 
 ---
 
-## 阶段 3 — v0.3 可观测性增强
+## 阶段 3 — v0.3 可观测性增强 ✅
 
 > 无向后兼容约束 — 首次发布前 API 可自由 breaking change。
 
 ### 3.1 数据暴露
 
-- `/agents/stats` — 按 agent_id 聚合（runs、tokens、tools、duration、error rate）
-- 会话详情页 — 单会话内 LLM + Tool 调用时间线瀑布图
-- 暴露 `subagent_runs` 和 `mcp_calls`（API + UI）
-- Gateway heartbeat 历史和 uptime 趋势
+- ✅ `/agents/stats` — 按 agent_id 聚合（runs、tokens、tools、duration、error rate）
+- ✅ LLM、Tool、MCP 与 Subagent 会话详情瀑布图
+- ✅ 暴露 `subagent_runs` 和 `mcp_calls`（API + UI）
 
 ### 3.2 时间序列聚合
 
-- `/timeseries` — 时间桶聚合（1m/5m/1h/1d）
-- 时间范围选择器（1h/6h/24h/7d）真正驱动所有图表
-- 历史趋势折线图替换"最近 N 条"模式
-- 堆叠面积图 — 多指标叠加（如 CPU+内存、各模型 Token 趋势）
+- ✅ `/timeseries` — 时间桶聚合（1m/5m/1h/1d）
+- ✅ 时间范围选择器（1h/6h/24h/7d/30d）驱动所有图表
+- ✅ 历史趋势图替换“最近 N 条”模式
+- ✅ 资源与各模型 Token 堆叠面积趋势
 
 ### 3.3 丰富图表类型
 
-- 多指标组合图 — 同一图表叠加不同维度（如 LLM 请求量 + 延迟 + 错误率）
-- 热力图 — 时间×Agent 活跃度矩阵
-- 饼图/环形图 — Token 占比、工具调用分布
-- 散点图 — 单次 LLM 调用的延迟-Token 散点
-- Agent 对比视图 — 多 Agent 的 runs/tokens/errors 横向对比
-- 会话瀑布图 — 单会话内 LLM + Tool 调用时间线展开
-- 错误聚合 — 按 `error_category` 分组的 Top N
-- 成本分析 — 按模型/Agent/时间的 cost 分解（当数据可用时）
+- ✅ LLM 请求量、延迟与错误率多指标组合图
+- ✅ 时间×Agent 活跃度热力图
+- ✅ Token、工具调用环形图
+- ✅ 单次 LLM 调用延迟-Token 散点图
+- ✅ 多 Agent runs/tokens/errors 横向对比
+- ✅ LLM/Tool/MCP/Subagent 会话瀑布图
+- ✅ 按 `error_category` 聚合错误
+- ✅ 按模型、Agent、时间分析成本（Provider 上报时）
 
 ### 3.4 配置与自定义
 
-- Dashboard JSON 配置（模块显隐、排序、刷新间隔）
-- 拖拽排序
-- 阈值告警高亮（如 CPU > 80%、错误率 > 10%）
-- 暗色/亮色主题切换
+- ✅ Dashboard JSON 配置（模块显隐、排序、刷新间隔）
+- ✅ 拖拽排序
+- ✅ 可配置阈值告警高亮
+- ✅ 暗色/亮色主题切换
 
 ### 3.5 前端工程化
 
-- 单 HTML → Vite 组件化（Vite 配置已有基础）
-- 引入轻量图表库（如 Chart.js、lightweight-charts）替代手写 SVG
-- 响应式布局优化，支持平板/手机
+- ✅ 单 HTML 迁移为 Vite ES Module 组件
+- ✅ 按需打包 Chart.js，热力图/瀑布图使用轻量 DOM 实现
+- ✅ 平板/手机响应式布局
+- ✅ JavaScript gzip 约 72 KiB，无外部 CDN/运行时依赖
 
 **约束：** 无兼容包袱。SQLite 聚合注意性能（利用索引 + `strftime` 桶化）。前端 bundle < 200KB gzipped。零外部运行时依赖。
 

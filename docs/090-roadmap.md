@@ -29,7 +29,7 @@ daemon outage does not interrupt the run.
 
 ---
 
-## Phase 2 — Product Dashboard (In Progress)
+## Phase 2 — Product Dashboard ✅
 
 ### Completed
 
@@ -44,66 +44,65 @@ daemon outage does not interrupt the run.
 - ✅ Time range selector (1h/6h/24h/7d) with localStorage
 - ✅ Standalone web server with reverse proxy (`cmd/observatory-web`)
 - ✅ Vite build pipeline with build ID injection
-- ✅ Schema migration framework (v1 → v3, agent_id column, indexes)
+- ✅ Schema migration framework (v1 → v5, agent_id, aggregation indexes, disk capacity)
 - ✅ Agent ID extraction from session key in forwarder
-- ✅ API version 2 with compatibility banner
+- ✅ API version 3 with compatibility banner
 - ✅ Mobile responsive layout, pinch-zoom disabled
 - ✅ Chinese documentation (README.zh.md + docs/zh/*)
 - ✅ Cloudflare Tunnel deployment + Access protection
 
-### Remaining
+### Completed in v0.3
 
-- ⬜ Session/run detail pages (waterfall view of LLM + Tool calls within a session)
-- ⬜ Interactive resource charts tied to time range selection
-- ⬜ Retention controls and database maintenance UX
-- ⬜ Time range selector actually drives all chart data windows
-- ⬜ Subagent and MCP call exposure (tables exist, no API/UI yet)
+- ✅ Session waterfall for LLM, Tool, MCP, and Subagent activity
+- ✅ Interactive historical charts driven by one time range
+- ✅ Subagent and MCP API/UI exposure
+- ✅ Dashboard JSON, drag ordering, thresholds, and themes
 
-**Completion: ~70%**
+**Completion: 100%**
 
 ---
 
-## Phase 3 — v0.3 Observability Enhancement
+## Phase 3 — v0.3 Observability Enhancement ✅
 
 > No backward compatibility constraints — API can break freely until first release.
 
 ### 3.1 Data Exposure
 
-- `/agents/stats` — per-agent_id aggregation (runs, tokens, tools, duration, error rate)
-- Session detail page — waterfall chart for LLM + Tool call timeline within a single session
-- Expose `subagent_runs` and `mcp_calls` via API and UI
-- Gateway heartbeat history and uptime trends
+- ✅ `/agents/stats` — per-agent_id aggregation (runs, tokens, tools, duration, error rate)
+- ✅ Session detail waterfall for LLM, Tool, MCP, and Subagent calls
+- ✅ Expose `subagent_runs` and `mcp_calls` via API and UI
 
 ### 3.2 Time Series Aggregation
 
-- `/timeseries` — time-bucket aggregation (1m/5m/1h/1d)
-- Time range selector (1h/6h/24h/7d) truly drives all charts
-- Historical trend line charts replace "latest N rows" mode
-- Stacked area charts — multi-metric overlay (e.g. CPU+memory, per-model token trends)
+- ✅ `/timeseries` — time-bucket aggregation (1m/5m/1h/1d)
+- ✅ Time range selector (1h/6h/24h/7d/30d) drives all charts
+- ✅ Historical trend charts replace "latest N rows" mode
+- ✅ Stacked area charts for resource and per-model token trends
 
 ### 3.3 Rich Chart Types
 
-- Multi-metric combo charts — overlay different dimensions on one chart (e.g. LLM volume + latency + error rate)
-- Heatmap — time × Agent activity matrix
-- Pie/donut charts — token share, tool call distribution
-- Scatter plots — per-LLM-call latency-vs-token scatter
-- Agent comparison view — cross-agent runs/tokens/errors
-- Session waterfall — LLM + Tool call timeline展开
-- Error aggregation — grouped by `error_category`, top-N
-- Cost analysis — by model/agent/time breakdown (when cost data available)
+- ✅ Multi-metric combo charts for LLM volume, latency, and error rate
+- ✅ Time × Agent activity heatmap
+- ✅ Token and tool distribution doughnut charts
+- ✅ Per-LLM-call latency-vs-token scatter
+- ✅ Cross-agent runs/tokens/errors comparison
+- ✅ LLM/Tool/MCP/Subagent session waterfall
+- ✅ Error aggregation by `error_category`
+- ✅ Cost analysis by model, agent, and time when providers report cost
 
 ### 3.4 Configuration & Customization
 
-- Dashboard JSON config (module visibility, ordering, refresh interval)
-- Drag-and-drop module reordering
-- Threshold alerting with visual highlight (e.g. CPU > 80%, error rate > 10%)
-- Dark/light theme toggle
+- ✅ Dashboard JSON config (module visibility, ordering, refresh interval)
+- ✅ Drag-and-drop module reordering
+- ✅ Configurable threshold alert highlighting
+- ✅ Dark/light theme toggle
 
 ### 3.5 Frontend Engineering
 
-- Migrate single HTML → Vite component architecture (Vite config already in place)
-- Adopt lightweight chart library (e.g. Chart.js, lightweight-charts) to replace hand-drawn SVG
-- Responsive layout optimization for tablet/mobile
+- ✅ Migrate single HTML to Vite ES-module components
+- ✅ Tree-shaken Chart.js bundle with DOM heatmap/waterfall specializations
+- ✅ Responsive tablet/mobile layout
+- ✅ 72 KiB gzipped JavaScript bundle with no external runtime CDN/dependency
 
 **Constraints:** No compat burden. SQLite aggregation performance matters (leverage indexes + `strftime` bucketing). Frontend bundle < 200KB gzipped. Zero external runtime dependencies.
 

@@ -14,9 +14,15 @@ SSE. The default listener is the local web proxy; the backend listens on
 | `GET /api/v1/status` | Daemon/Gateway/storage summary |
 | `GET /api/v1/instances` | Instances |
 | `GET /api/v1/sessions` | Sessions |
-| `GET /api/v1/sessions/{id}` | Session and related runs |
+| `GET /api/v1/sessions/{id}` | Session, runs, and unified LLM/Tool/MCP/Subagent waterfall timeline |
 | `GET /api/v1/runs` | Agent runs |
 | `GET /api/v1/runs/{id}` | Run with model/tool activity |
+| `GET /api/v1/agents/stats` | Runs, tokens, tools, duration, errors, and cost by agent |
+| `GET /api/v1/subagents` | Subagent runs |
+| `GET /api/v1/llm/calls` | LLM calls, including normalized usage |
+| `GET /api/v1/mcp/calls` | MCP calls |
+| `GET /api/v1/timeseries` | Bucketed runs, LLM, token, tool, resource, model, and agent series |
+| `GET /api/v1/errors/stats` | Error aggregation by source and category |
 | `GET /api/v1/resources` | Resource samples |
 | `GET /api/v1/tools/stats` | Tool aggregates |
 | `GET /api/v1/models/stats` | Model aggregates |
@@ -29,6 +35,8 @@ SSE. The default listener is the local web proxy; the backend listens on
 - `cursor`: opaque stable row/timestamp cursor;
 - `from`, `to`: UTC RFC3339 inclusive range;
 - `instanceId`: exact local instance filter;
+- `agentId`: resolved Agent filter;
+- `bucket`: `1m`, `5m`, `1h`, or `1d` on `/timeseries` (at most 2,000 buckets);
 - endpoint-specific filters such as `status`, `eventType`, `sessionId`.
 
 Lists return newest first:
@@ -61,11 +69,11 @@ are `500`.
 
 ```json
 {
-  "apiVersion":2,
-  "schemaVersion":3,
-  "capabilities":["agent-timeline-v2"],
+  "apiVersion":3,
+  "schemaVersion":5,
+  "capabilities":["agent-stats-v3","session-waterfall-v3","timeseries-v3","dashboard-config-v3","disk-space-v3"],
   "buildId":"20260710T130000Z-abc1234",
-  "daemon":{"ready":true,"version":"0.2.0"},
+  "daemon":{"ready":true,"version":"0.3.0"},
   "gateway":{"up":true,"instanceId":"local-abc123","pid":10207},
   "storage":{"events":832,"databaseBytes":1048576},
   "time":"2026-07-10T10:00:00Z"
@@ -75,6 +83,14 @@ are `500`.
 The frontend checks `apiVersion` and `capabilities` before rendering features
 that depend on newer projections. A mismatch is shown explicitly instead of
 silently falling back to an older visualization.
+
+## Time series
+
+`GET /api/v1/timeseries?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z&bucket=1h`
+returns three aligned sparse series: `points` for system/run/LLM/tool metrics,
+`models` for stacked token and cost trends, and `agents` for the activity
+heatmap. SQLite performs the bucketing and aggregation; raw rows are not sent to
+the browser for trend charts.
 
 ## SSE
 

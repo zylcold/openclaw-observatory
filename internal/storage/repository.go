@@ -59,7 +59,7 @@ func Open(path string) (*Repository, error) {
 	for _, migration := range []struct {
 		version int
 		sql     string
-	}{{2, schemaV2}, {3, schemaV3}} {
+	}{{2, schemaV2}, {3, schemaV3}, {4, schemaV4}, {5, schemaV5}} {
 		if err := applyMigration(db, migration.version, migration.sql); err != nil {
 			db.Close()
 			return nil, err
@@ -230,9 +230,10 @@ func reduce(ctx context.Context, tx *sql.Tx, e event.Event) error {
 			nullTime(e.EventType == "subagent.started", t), nullTime(e.EventType != "subagent.started", t), event.String(p, "outcome"))
 		return err
 	case "resource.sampled":
-		_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO resource_samples(event_id,instance_id,process_id,sampled_at,cpu_seconds_total,resident_memory_bytes,virtual_memory_bytes,threads,open_fds,read_bytes,write_bytes)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?)`, e.EventID, e.InstanceID, e.ProcessID, t, event.Float(p, "cpuSecondsTotal"), int64(event.Float(p, "residentMemoryBytes")),
-			int64(event.Float(p, "virtualMemoryBytes")), int64(event.Float(p, "threads")), int64(event.Float(p, "openFds")), int64(event.Float(p, "readBytesTotal")), int64(event.Float(p, "writeBytesTotal")))
+		_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO resource_samples(event_id,instance_id,process_id,sampled_at,cpu_seconds_total,resident_memory_bytes,virtual_memory_bytes,threads,open_fds,read_bytes,write_bytes,disk_total_bytes,disk_available_bytes)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, e.EventID, e.InstanceID, e.ProcessID, t, event.Float(p, "cpuSecondsTotal"), int64(event.Float(p, "residentMemoryBytes")),
+			int64(event.Float(p, "virtualMemoryBytes")), int64(event.Float(p, "threads")), int64(event.Float(p, "openFds")), int64(event.Float(p, "readBytesTotal")), int64(event.Float(p, "writeBytesTotal")),
+			int64(event.Float(p, "diskTotalBytes")), int64(event.Float(p, "diskAvailableBytes")))
 		if err != nil {
 			return err
 		}
@@ -336,7 +337,7 @@ func (r *Repository) DBSize() int64 {
 }
 
 func (r *Repository) Count(ctx context.Context, table string) (int64, error) {
-	allowed := map[string]bool{"events": true, "sessions": true, "agent_runs": true, "llm_calls": true, "tool_calls": true, "mcp_calls": true, "resource_samples": true}
+	allowed := map[string]bool{"events": true, "sessions": true, "agent_runs": true, "subagent_runs": true, "llm_calls": true, "tool_calls": true, "mcp_calls": true, "resource_samples": true}
 	if !allowed[table] {
 		return 0, errors.New("invalid table")
 	}
