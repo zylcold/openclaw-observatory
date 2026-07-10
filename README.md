@@ -1,5 +1,7 @@
 # OpenClaw Observatory
 
+**English** | [中文](README.zh.md)
+
 > A local-first observability platform for OpenClaw runtime, resource usage,
 > agent execution, LLM calls, and tool activity.
 
