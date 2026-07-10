@@ -628,7 +628,13 @@
       const models = res.data;
       if (!models.length) return;
 
-      const maxTokens = Math.max(...models.map(m => (m.inputTokens || 0) + (m.outputTokens || 0)), 1);
+      // Check if any model has token data
+      const hasTokenData = models.some(m => (m.inputTokens || 0) + (m.outputTokens || 0) > 0);
+      
+      const maxVal = hasTokenData 
+        ? Math.max(...models.map(m => (m.inputTokens || 0) + (m.outputTokens || 0)), 1)
+        : Math.max(...models.map(m => m.requests || 0), 1);
+      
       let totalTokens = 0, totalInput = 0, totalOutput = 0, totalCost = 0, totalRequests = 0;
 
       const chart = $('llm-tokens-chart');
@@ -639,20 +645,34 @@
         totalTokens += total; totalInput += inp; totalOutput += out;
         totalCost += m.costUsd || 0;
         totalRequests += m.requests || 0;
-        const inpPct = (inp / maxTokens * 100).toFixed(1);
-        const outPct = (out / maxTokens * 100).toFixed(1);
+        
+        // Use token data if available, otherwise fall back to request count
+        const barValue = hasTokenData ? total : (m.requests || 0);
+        const pct = (barValue / maxVal * 100).toFixed(1);
+        const label = hasTokenData ? fmt(total) : `${m.requests || 0} req`;
+        
+        // For token display, split into input/output; for requests, show as single bar
+        const inpPct = hasTokenData ? (inp / maxVal * 100).toFixed(1) : pct;
+        const outPct = hasTokenData ? (out / maxVal * 100).toFixed(1) : '0';
+        
         return `<div class="bar-row">
           <span class="bar-label">${m.model || 'unknown'}</span>
-          <div class="bar-track"><div class="bar-fill green" style="width:${inpPct}%"></div><div class="bar-fill orange" style="width:${outPct}%"></div></div>
-          <span class="bar-value">${fmt(total)}</span>
+          <div class="bar-track"><div class="bar-fill green" style="width:${inpPct}%"></div>${hasTokenData ? `<div class="bar-fill orange" style="width:${outPct}%"></div>` : ''}</div>
+          <span class="bar-value">${label}</span>
         </div>`;
       }).join('');
       $('llm-total').textContent = totalRequests;
 
-      $('kpi-tokens').textContent = fmt(totalTokens);
-      $('kpi-tokens-in').textContent = fmt(totalInput);
-      $('kpi-tokens-out').textContent = fmt(totalOutput);
+      $('kpi-tokens').textContent = hasTokenData ? fmt(totalTokens) : `${totalRequests} req`;
+      $('kpi-tokens-in').textContent = hasTokenData ? fmt(totalInput) : '—';
+      $('kpi-tokens-out').textContent = hasTokenData ? fmt(totalOutput) : '—';
       $('kpi-cost').textContent = totalCost.toFixed(4);
+      
+      // Update chart title if no token data
+      if (!hasTokenData) {
+        const title = document.querySelector('#llm-tokens-chart')?.closest('.card')?.querySelector('.card-title');
+        if (title) title.textContent = '请求次数 · 按模型';
+      }
     }
 
     async function fetchToolStats() {
