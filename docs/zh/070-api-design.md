@@ -12,9 +12,15 @@
 | `GET /api/v1/status` | 守护进程/Gateway/存储摘要 |
 | `GET /api/v1/instances` | 实例列表 |
 | `GET /api/v1/sessions` | 会话列表 |
-| `GET /api/v1/sessions/{id}` | 会话及相关运行 |
+| `GET /api/v1/sessions/{id}` | 会话、运行及统一 LLM/Tool/MCP/Subagent 瀑布时间线 |
 | `GET /api/v1/runs` | Agent 运行列表 |
 | `GET /api/v1/runs/{id}` | 运行及其模型/工具活动 |
+| `GET /api/v1/agents/stats` | 按 Agent 聚合运行、Token、工具、耗时、错误和成本 |
+| `GET /api/v1/subagents` | Subagent 运行列表 |
+| `GET /api/v1/llm/calls` | LLM 调用及标准化用量 |
+| `GET /api/v1/mcp/calls` | MCP 调用列表 |
+| `GET /api/v1/timeseries` | 按时间桶聚合运行、LLM、Token、工具、资源、模型与 Agent |
+| `GET /api/v1/errors/stats` | 按来源和 Category 聚合错误 |
 | `GET /api/v1/resources` | 资源采样 |
 | `GET /api/v1/tools/stats` | 工具聚合 |
 | `GET /api/v1/models/stats` | 模型聚合 |
@@ -27,6 +33,8 @@
 - `cursor`：不透明的稳定行/时间戳游标；
 - `from`、`to`：UTC RFC3339 包含范围；
 - `instanceId`：精确本地实例过滤；
+- `agentId`：解析后的 Agent 过滤；
+- `bucket`：`/timeseries` 支持 `1m`、`5m`、`1h`、`1d`，最多 2,000 个时间桶；
 - 端点特有过滤器如 `status`、`eventType`、`sessionId`。
 
 列表按最新优先返回：
@@ -56,11 +64,11 @@
 
 ```json
 {
-  "apiVersion":2,
-  "schemaVersion":3,
-  "capabilities":["agent-timeline-v2"],
+  "apiVersion":3,
+  "schemaVersion":5,
+  "capabilities":["agent-stats-v3","session-waterfall-v3","timeseries-v3","dashboard-config-v3","disk-space-v3"],
   "buildId":"20260710T130000Z-abc1234",
-  "daemon":{"ready":true,"version":"0.2.0"},
+  "daemon":{"ready":true,"version":"0.3.0"},
   "gateway":{"up":true,"instanceId":"local-abc123","pid":10207},
   "storage":{"events":832,"databaseBytes":1048576},
   "time":"2026-07-10T10:00:00Z"
@@ -68,6 +76,11 @@
 ```
 
 前端会在渲染依赖新投影的功能前检查 `apiVersion` 和 `capabilities`。版本不匹配时会明确提示，而不是静默回退到旧可视化。
+
+## 时间序列
+
+`GET /api/v1/timeseries?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z&bucket=1h`
+返回三组对齐的稀疏序列：`points` 用于系统、运行、LLM 与工具指标，`models` 用于堆叠 Token 和成本趋势，`agents` 用于活跃度热力图。时间分桶与聚合在 SQLite 内完成，趋势图不再把原始明细行发送给浏览器。
 
 ## SSE
 

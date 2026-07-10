@@ -14,7 +14,7 @@ short transactions, WAL mode, `foreign_keys=ON`, and a busy timeout.
 | `tool_calls` | `(instance_id, tool_call_id)` PK; `run_id` FK; tool/source/status/duration | run, tool+status, start |
 | `mcp_calls` | same lifecycle fields plus bounded owner/server | run, tool+status |
 | `subagent_runs` | `(instance_id, subagent_id)` PK; parent/child session/run/status | parent run, child session |
-| `resource_samples` | integer PK; instance/PID/time and process measurements | instance+time |
+| `resource_samples` | integer PK; instance/PID/time, process measurements, disk capacity/available bytes | instance+time |
 | `events` | `event_id` PK; envelope columns and payload JSON | instance+time, type+time, producer+sequence |
 | `daily_stats` | `(day, instance_id, dimension_type, dimension_value)` PK; aggregate JSON | instance+day |
 | `schema_migrations` | `version` PK, applied time | none |
@@ -51,6 +51,8 @@ Schema v2 adds `agent_id` to sessions and agent runs. Schema v3 backfills those
 columns from the immutable event ledger, then falls back to session and
 subagent attribution. This makes already-collected runs visible in the
 per-Agent timeline immediately after upgrade.
+Schema v4 adds time-oriented aggregation indexes. Schema v5 adds host filesystem
+capacity and available-byte samples for disk utilization trends.
 
 ## Resource retention
 

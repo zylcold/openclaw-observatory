@@ -66,11 +66,11 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 STATUS="$(curl -fsS --max-time 3 http://127.0.0.1:10086/api/v1/status)"
 PAGE="$(curl -fsS --max-time 3 http://127.0.0.1:10086/)"
-if [[ "$STATUS" != *'"apiVersion":2'* || "$STATUS" != *'"schemaVersion":3'* || "$STATUS" != *'agent-timeline-v2'* ]]; then
+if [[ "$STATUS" != *'"apiVersion":3'* || "$STATUS" != *'"schemaVersion":5'* || "$STATUS" != *'timeseries-v3'* || "$STATUS" != *'disk-space-v3'* ]]; then
   echo "Observatory backend compatibility check failed: $STATUS" >&2
   exit 1
 fi
-if [[ "$PAGE" != *'>AGENT<'* || "$PAGE" == *'>RUN ID<'* ]]; then
+if [[ "$PAGE" != *'observatory-required-api-version" content="3"'* || "$PAGE" != *'observatory-required-capability" content="timeseries-v3"'* ]]; then
   echo "Observatory frontend build verification failed." >&2
   exit 1
 fi

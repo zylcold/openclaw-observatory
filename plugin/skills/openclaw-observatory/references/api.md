@@ -34,6 +34,8 @@ Resource fields:
 - `threads`, `openFds`: current sampled counts;
 - `readBytesTotal`, `writeBytesTotal`: cumulative IO when supported; zero can
   mean unavailable rather than no IO.
+- `diskTotalBytes`, `diskAvailableBytes`: capacity and user-available space on
+  the filesystem containing the current user's home directory.
 
 The API omits raw Prompt, response, Tool input/output, commands, paths, chat
 identity, and free-form error text. Do not promise analysis of absent content.
