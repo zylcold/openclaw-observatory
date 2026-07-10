@@ -1,5 +1,7 @@
 package storage
 
+const CurrentSchemaVersion = 3
+
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version INTEGER PRIMARY KEY,
@@ -165,4 +167,48 @@ CREATE TABLE IF NOT EXISTS daily_stats (
   stats_json TEXT NOT NULL,
   PRIMARY KEY(day, instance_id, dimension_type, dimension_value)
 );
+`
+
+const schemaV2 = `
+ALTER TABLE sessions ADD COLUMN agent_id TEXT;
+ALTER TABLE agent_runs ADD COLUMN agent_id TEXT;
+CREATE INDEX idx_sessions_agent_started ON sessions(instance_id, agent_id, started_at DESC);
+CREATE INDEX idx_runs_agent_started ON agent_runs(instance_id, agent_id, started_at DESC);
+`
+
+const schemaV3 = `
+UPDATE sessions
+SET agent_id = (
+  SELECT NULLIF(TRIM(CAST(json_extract(e.payload_json, '$.agentId') AS TEXT)), '')
+  FROM events e
+  WHERE e.instance_id = sessions.instance_id
+    AND e.event_type IN ('session.started', 'session.completed', 'session.failed')
+    AND json_extract(e.payload_json, '$.sessionId') = sessions.session_id
+    AND json_type(e.payload_json, '$.agentId') = 'text'
+  ORDER BY e.occurred_at DESC, e.sequence DESC
+  LIMIT 1
+)
+WHERE agent_id IS NULL OR agent_id = '';
+
+UPDATE agent_runs
+SET agent_id = (
+  SELECT NULLIF(TRIM(CAST(json_extract(e.payload_json, '$.agentId') AS TEXT)), '')
+  FROM events e
+  WHERE e.instance_id = agent_runs.instance_id
+    AND e.event_type IN ('agent.started', 'agent.completed', 'agent.failed')
+    AND json_extract(e.payload_json, '$.runId') = agent_runs.run_id
+    AND json_type(e.payload_json, '$.agentId') = 'text'
+  ORDER BY e.occurred_at DESC, e.sequence DESC
+  LIMIT 1
+)
+WHERE agent_id IS NULL OR agent_id = '';
+
+UPDATE agent_runs
+SET agent_id = COALESCE(
+  (SELECT NULLIF(s.agent_id, '') FROM sessions s
+   WHERE s.instance_id = agent_runs.instance_id AND s.session_id = agent_runs.session_id LIMIT 1),
+  (SELECT NULLIF(sr.agent_id, '') FROM subagent_runs sr
+   WHERE sr.instance_id = agent_runs.instance_id AND sr.subagent_id = agent_runs.run_id LIMIT 1)
+)
+WHERE agent_id IS NULL OR agent_id = '';
 `

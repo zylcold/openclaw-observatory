@@ -35,7 +35,7 @@ func run() error {
 	dataDir := flag.String("data-dir", defaultDir, "private runtime data directory")
 	socketPath := flag.String("socket", "", "Unix event socket path (default: data-dir/observatory.sock)")
 	dbPath := flag.String("db", "", "SQLite path (default: data-dir/observatory.db)")
-	listenAddr := flag.String("listen", "127.0.0.1:10086", "REST/SSE/metrics listen address")
+	listenAddr := flag.String("listen", "127.0.0.1:10087", "REST/SSE/metrics listen address")
 	sampleInterval := flag.Duration("sample-interval", 5*time.Second, "process resource sample interval")
 	flag.Parse()
 	if *socketPath == "" {

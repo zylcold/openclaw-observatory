@@ -40,17 +40,19 @@ export default definePluginEntry({
       }
     });
 
-    api.on("session_start", (evt) => {
+    api.on("session_start", (evt, ctx) => {
       forwarder.enqueue("session.started", {
         sessionId: evt.sessionId,
         sessionKeyHash: forwarder.sessionKeyHash(evt.sessionKey),
+        agentId: ctx?.agentId,
         resumedFromHash: forwarder.sessionKeyHash(evt.resumedFrom),
       });
     });
-    api.on("session_end", (evt) => {
+    api.on("session_end", (evt, ctx) => {
       const failed = evt.reason === "unknown";
       forwarder.enqueue(failed ? "session.failed" : "session.completed", {
         sessionId: evt.sessionId, sessionKeyHash: forwarder.sessionKeyHash(evt.sessionKey),
+        agentId: ctx?.agentId,
         reason: evt.reason, messageCount: evt.messageCount, durationMs: evt.durationMs,
       }, "critical");
     });
@@ -74,14 +76,26 @@ export default definePluginEntry({
       }, "critical", evt.endedAt);
       if (childSessionHash) forwarder.subagentBySession.delete(childSessionHash);
     });
+    // Requires hooks.allowConversationAccess=true. Conversation fields are
+    // deliberately ignored; only identifiers and normalized usage are copied.
+    api.on("llm_output", (evt, ctx) => {
+      // OpenClaw may instantiate typed hooks separately from plugin services;
+      // ensure this hook-owned forwarder has an active asynchronous flusher.
+      forwarder.start();
+      forwarder.mapUsage({
+        runId: evt.runId,
+        sessionId: evt.sessionId || ctx?.sessionId,
+        sessionKey: ctx?.sessionKey,
+        provider: evt.provider,
+        model: evt.model,
+        usage: evt.usage,
+      });
+    });
 
     api.registerService({
       id: "openclaw-observatory-forwarder",
       start(ctx) {
         forwarder.start();
-        // Private diagnostic content is deliberately ignored: only `evt` is read.
-        // Installed plugins normally receive the public diagnostics export; bundled,
-        // host-trusted plugins may additionally receive the internal context facade.
         if (ctx.internalDiagnostics?.onEvent) {
           unsubscribeDiagnostics = ctx.internalDiagnostics.onEvent((evt) => forwarder.mapDiagnostic(evt));
         } else {

@@ -56,12 +56,49 @@ func Open(path string) (*Repository, error) {
 		db.Close()
 		return nil, err
 	}
+	for _, migration := range []struct {
+		version int
+		sql     string
+	}{{2, schemaV2}, {3, schemaV3}} {
+		if err := applyMigration(db, migration.version, migration.sql); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	return &Repository{db: db, path: path}, nil
+}
+
+func applyMigration(db *sql.DB, version int, statements string) error {
+	var applied int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=?`, version).Scan(&applied); err != nil {
+		return err
+	}
+	if applied != 0 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(statements); err != nil {
+		return fmt.Errorf("migrate schema v%d: %w", version, err)
+	}
+	if _, err := tx.Exec(`INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)`, version, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *Repository) Close() error { return r.db.Close() }
 
 func (r *Repository) Ping(ctx context.Context) error { return r.db.PingContext(ctx) }
+
+func (r *Repository) SchemaVersion(ctx context.Context) (int, error) {
+	var version int
+	err := r.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&version)
+	return version, err
+}
 
 func (r *Repository) InsertEvents(ctx context.Context, events []event.Event) (InsertResult, error) {
 	result := InsertResult{Accepted: len(events)}
@@ -128,14 +165,14 @@ func reduce(ctx context.Context, tx *sql.Tx, e event.Event) error {
 		}
 		status := statusFor(e.EventType)
 		if e.EventType == "session.started" {
-			_, err := tx.ExecContext(ctx, `INSERT INTO sessions(instance_id,session_id,session_key_hash,status,started_at)
-          VALUES(?,?,?,?,?) ON CONFLICT(instance_id,session_id) DO UPDATE SET session_key_hash=COALESCE(NULLIF(excluded.session_key_hash,''),session_key_hash),status='active',started_at=COALESCE(started_at,excluded.started_at)`,
-				e.InstanceID, id, event.String(p, "sessionKeyHash"), status, t)
+			_, err := tx.ExecContext(ctx, `INSERT INTO sessions(instance_id,session_id,session_key_hash,agent_id,status,started_at)
+		  VALUES(?,?,?,?,?,?) ON CONFLICT(instance_id,session_id) DO UPDATE SET session_key_hash=COALESCE(NULLIF(excluded.session_key_hash,''),session_key_hash),agent_id=COALESCE(NULLIF(excluded.agent_id,''),agent_id),status='active',started_at=COALESCE(started_at,excluded.started_at)`,
+				e.InstanceID, id, event.String(p, "sessionKeyHash"), event.String(p, "agentId"), status, t)
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO sessions(instance_id,session_id,session_key_hash,status,ended_at,end_reason,message_count)
-        VALUES(?,?,?,?,?,?,?) ON CONFLICT(instance_id,session_id) DO UPDATE SET status=excluded.status,ended_at=excluded.ended_at,end_reason=excluded.end_reason,message_count=excluded.message_count`,
-			e.InstanceID, id, event.String(p, "sessionKeyHash"), status, t, event.String(p, "reason"), int64(event.Float(p, "messageCount")))
+		_, err := tx.ExecContext(ctx, `INSERT INTO sessions(instance_id,session_id,session_key_hash,agent_id,status,ended_at,end_reason,message_count)
+		VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,session_id) DO UPDATE SET agent_id=COALESCE(NULLIF(excluded.agent_id,''),agent_id),status=excluded.status,ended_at=excluded.ended_at,end_reason=excluded.end_reason,message_count=excluded.message_count`,
+			e.InstanceID, id, event.String(p, "sessionKeyHash"), event.String(p, "agentId"), status, t, event.String(p, "reason"), int64(event.Float(p, "messageCount")))
 		return err
 	case "agent.started", "agent.completed", "agent.failed":
 		id := event.String(p, "runId")
@@ -143,18 +180,22 @@ func reduce(ctx context.Context, tx *sql.Tx, e event.Event) error {
 			return nil
 		}
 		status := statusFor(e.EventType)
-		_, err := tx.ExecContext(ctx, `INSERT INTO agent_runs(instance_id,run_id,session_id,provider,model,channel,trigger,status,started_at,ended_at,duration_ms,error_category)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,run_id) DO UPDATE SET
-        session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),provider=COALESCE(NULLIF(excluded.provider,''),provider),
-        model=COALESCE(NULLIF(excluded.model,''),model),channel=COALESCE(NULLIF(excluded.channel,''),channel),trigger=COALESCE(NULLIF(excluded.trigger,''),trigger),
+		_, err := tx.ExecContext(ctx, `INSERT INTO agent_runs(instance_id,run_id,session_id,agent_id,provider,model,channel,trigger,status,started_at,ended_at,duration_ms,error_category)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,run_id) DO UPDATE SET
+		session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),provider=COALESCE(NULLIF(excluded.provider,''),provider),
+		agent_id=COALESCE(NULLIF(excluded.agent_id,''),agent_id),
+		model=COALESCE(NULLIF(excluded.model,''),model),channel=COALESCE(NULLIF(excluded.channel,''),channel),trigger=COALESCE(NULLIF(excluded.trigger,''),trigger),
         status=CASE WHEN excluded.status='active' AND status!='unknown' THEN status ELSE excluded.status END,
         started_at=COALESCE(started_at,excluded.started_at),ended_at=COALESCE(excluded.ended_at,ended_at),duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category)`,
-			e.InstanceID, id, event.String(p, "sessionId"), event.String(p, "provider"), event.String(p, "model"), event.String(p, "channel"), event.String(p, "trigger"), status,
+			e.InstanceID, id, event.String(p, "sessionId"), event.String(p, "agentId"), event.String(p, "provider"), event.String(p, "model"), event.String(p, "channel"), event.String(p, "trigger"), status,
 			nullTime(e.EventType == "agent.started", t), nullTime(e.EventType != "agent.started", t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"))
 		return err
 	case "llm.started", "llm.completed", "llm.failed":
 		id := event.String(p, "callId")
 		if id == "" {
+			if event.Bool(p, "accountingUpdate") {
+				return applyRunUsageUpdate(ctx, tx, e.InstanceID, p)
+			}
 			return nil
 		}
 		status := statusFor(e.EventType)
@@ -199,6 +240,25 @@ func reduce(ctx context.Context, tx *sql.Tx, e event.Event) error {
 		return err
 	}
 	return nil
+}
+
+func applyRunUsageUpdate(ctx context.Context, tx *sql.Tx, instanceID string, p map[string]any) error {
+	runID := event.String(p, "runId")
+	if runID == "" {
+		return nil
+	}
+	provider := event.String(p, "provider")
+	model := event.String(p, "model")
+	_, err := tx.ExecContext(ctx, `UPDATE llm_calls SET
+      input_tokens=MAX(input_tokens,?),output_tokens=MAX(output_tokens,?),cache_read_tokens=MAX(cache_read_tokens,?),
+      cache_write_tokens=MAX(cache_write_tokens,?),cost_usd=MAX(cost_usd,?)
+      WHERE rowid=(SELECT rowid FROM llm_calls WHERE instance_id=? AND run_id=?
+        AND (?='' OR provider=?) AND (?='' OR model=?)
+        ORDER BY COALESCE(ended_at,started_at) DESC LIMIT 1)`,
+		event.Float(p, "inputTokens"), event.Float(p, "outputTokens"), event.Float(p, "cacheReadTokens"),
+		event.Float(p, "cacheWriteTokens"), event.Float(p, "costUsd"), instanceID, runID,
+		provider, provider, model, model)
+	return err
 }
 
 func reduceTool(ctx context.Context, tx *sql.Tx, e event.Event, p map[string]any, t string, mcp bool) error {

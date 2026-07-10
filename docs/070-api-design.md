@@ -1,7 +1,8 @@
 # REST and SSE API
 
 Base URL: `http://127.0.0.1:10086`. Responses use JSON except `/metrics` and
-SSE. The default listener is local-only.
+SSE. The default listener is the local web proxy; the backend listens on
+`127.0.0.1:10087`.
 
 ## Endpoints
 
@@ -60,12 +61,20 @@ are `500`.
 
 ```json
 {
-  "daemon":{"ready":true,"version":"0.1.0"},
+  "apiVersion":2,
+  "schemaVersion":3,
+  "capabilities":["agent-timeline-v2"],
+  "buildId":"20260710T130000Z-abc1234",
+  "daemon":{"ready":true,"version":"0.2.0"},
   "gateway":{"up":true,"instanceId":"local-abc123","pid":10207},
   "storage":{"events":832,"databaseBytes":1048576},
   "time":"2026-07-10T10:00:00Z"
 }
 ```
+
+The frontend checks `apiVersion` and `capabilities` before rendering features
+that depend on newer projections. A mismatch is shown explicitly instead of
+silently falling back to an older visualization.
 
 ## SSE
 

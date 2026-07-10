@@ -34,7 +34,7 @@ func (r *Repository) ListInstances(ctx context.Context) ([]map[string]any, error
 
 func (r *Repository) ListSessions(ctx context.Context, opts ListOptions) ([]map[string]any, error) {
 	o := opts.normalized()
-	q := `SELECT instance_id AS instanceId,session_id AS sessionId,session_key_hash AS sessionKeyHash,status,
+	q := `SELECT instance_id AS instanceId,session_id AS sessionId,session_key_hash AS sessionKeyHash,agent_id AS agentId,status,
     started_at AS startedAt,ended_at AS endedAt,end_reason AS endReason,message_count AS messageCount FROM sessions WHERE 1=1`
 	var args []any
 	q, args = filters(q, args, o, "started_at", true)
@@ -45,7 +45,9 @@ func (r *Repository) ListSessions(ctx context.Context, opts ListOptions) ([]map[
 
 func (r *Repository) ListRuns(ctx context.Context, opts ListOptions) ([]map[string]any, error) {
 	o := opts.normalized()
-	q := `SELECT instance_id AS instanceId,run_id AS runId,session_id AS sessionId,provider,model,channel,trigger,status,
+	q := `SELECT instance_id AS instanceId,run_id AS runId,session_id AS sessionId,
+	    COALESCE(NULLIF(agent_runs.agent_id,''),NULLIF((SELECT agent_id FROM subagent_runs WHERE subagent_runs.instance_id=agent_runs.instance_id AND subagent_runs.subagent_id=agent_runs.run_id LIMIT 1),''),NULLIF((SELECT agent_id FROM sessions WHERE sessions.instance_id=agent_runs.instance_id AND sessions.session_id=agent_runs.session_id LIMIT 1),''),'unknown') AS agentId,
+	    provider,model,channel,trigger,status,
     started_at AS startedAt,ended_at AS endedAt,duration_ms AS durationMs,error_category AS errorCategory FROM agent_runs WHERE 1=1`
 	var args []any
 	q, args = filters(q, args, o, "started_at", true)
@@ -102,7 +104,7 @@ func filters(q string, args []any, o ListOptions, timeColumn string, status bool
 }
 
 func (r *Repository) SessionDetail(ctx context.Context, id string) (map[string]any, error) {
-	rows, err := queryMaps(ctx, r.db, `SELECT instance_id AS instanceId,session_id AS sessionId,session_key_hash AS sessionKeyHash,status,
+	rows, err := queryMaps(ctx, r.db, `SELECT instance_id AS instanceId,session_id AS sessionId,session_key_hash AS sessionKeyHash,agent_id AS agentId,status,
     started_at AS startedAt,ended_at AS endedAt,end_reason AS endReason,message_count AS messageCount FROM sessions WHERE session_id=? LIMIT 1`, id)
 	if err != nil || len(rows) == 0 {
 		if err == nil {
@@ -110,7 +112,7 @@ func (r *Repository) SessionDetail(ctx context.Context, id string) (map[string]a
 		}
 		return nil, err
 	}
-	runs, err := queryMaps(ctx, r.db, `SELECT run_id AS runId,provider,model,status,started_at AS startedAt,ended_at AS endedAt,duration_ms AS durationMs
+	runs, err := queryMaps(ctx, r.db, `SELECT run_id AS runId,COALESCE(NULLIF(agent_id,''),NULLIF((SELECT agent_id FROM sessions WHERE sessions.instance_id=agent_runs.instance_id AND sessions.session_id=agent_runs.session_id LIMIT 1),''),'unknown') AS agentId,provider,model,status,started_at AS startedAt,ended_at AS endedAt,duration_ms AS durationMs
     FROM agent_runs WHERE session_id=? ORDER BY started_at DESC LIMIT 500`, id)
 	if err != nil {
 		return nil, err
@@ -120,7 +122,7 @@ func (r *Repository) SessionDetail(ctx context.Context, id string) (map[string]a
 }
 
 func (r *Repository) RunDetail(ctx context.Context, id string) (map[string]any, error) {
-	rows, err := queryMaps(ctx, r.db, `SELECT instance_id AS instanceId,run_id AS runId,session_id AS sessionId,provider,model,channel,trigger,status,
+	rows, err := queryMaps(ctx, r.db, `SELECT instance_id AS instanceId,run_id AS runId,session_id AS sessionId,COALESCE(NULLIF(agent_id,''),NULLIF((SELECT agent_id FROM sessions WHERE sessions.instance_id=agent_runs.instance_id AND sessions.session_id=agent_runs.session_id LIMIT 1),''),'unknown') AS agentId,provider,model,channel,trigger,status,
     started_at AS startedAt,ended_at AS endedAt,duration_ms AS durationMs,error_category AS errorCategory FROM agent_runs WHERE run_id=? LIMIT 1`, id)
 	if err != nil || len(rows) == 0 {
 		if err == nil {
@@ -154,8 +156,10 @@ func (r *Repository) ToolStats(ctx context.Context) ([]map[string]any, error) {
 
 func (r *Repository) ModelStats(ctx context.Context) ([]map[string]any, error) {
 	return queryMaps(ctx, r.db, `SELECT instance_id AS instanceId,COALESCE(NULLIF(provider,''),'unknown') AS provider,COALESCE(NULLIF(model,''),'unknown') AS model,
-    COUNT(*) AS requests,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS errors,SUM(input_tokens) AS inputTokens,SUM(output_tokens) AS outputTokens,
-    SUM(cost_usd) AS costUsd,AVG(duration_ms) AS averageDurationMs FROM llm_calls GROUP BY instance_id,provider,model ORDER BY requests DESC LIMIT 200`)
+	    COUNT(*) AS requests,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS errors,SUM(input_tokens) AS inputTokens,SUM(output_tokens) AS outputTokens,
+	    SUM(cache_read_tokens) AS cacheReadTokens,SUM(cache_write_tokens) AS cacheWriteTokens,
+	    SUM(cost_usd) AS costUsd,AVG(duration_ms) AS averageDurationMs FROM llm_calls GROUP BY instance_id,provider,model
+	    ORDER BY SUM(input_tokens+output_tokens+cache_read_tokens+cache_write_tokens) DESC,requests DESC LIMIT 200`)
 }
 
 func (r *Repository) Status(ctx context.Context) (map[string]any, error) {

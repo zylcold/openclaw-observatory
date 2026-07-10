@@ -8,8 +8,8 @@ short transactions, WAL mode, `foreign_keys=ON`, and a busy timeout.
 | Table | Primary/foreign keys and important fields | Indexes |
 | --- | --- | --- |
 | `instances` | `instance_id` PK; version, PID, status, start/last-seen/stop | status, last_seen |
-| `sessions` | `(instance_id, session_id)` PK; start/end/status/reason/message_count; FK instance | start, status |
-| `agent_runs` | `(instance_id, run_id)` PK; `session_id` FK; provider/model/status/times/duration | session, start, status |
+| `sessions` | `(instance_id, session_id)` PK; agent/start/end/status/reason/message_count; FK instance | agent, start, status |
+| `agent_runs` | `(instance_id, run_id)` PK; `session_id` FK; agent/provider/model/status/times/duration | agent, session, start, status |
 | `llm_calls` | `(instance_id, call_id)` PK; `run_id` FK; provider/model/status/times/usage/cost | run, provider+model, start |
 | `tool_calls` | `(instance_id, tool_call_id)` PK; `run_id` FK; tool/source/status/duration | run, tool+status, start |
 | `mcp_calls` | same lifecycle fields plus bounded owner/server | run, tool+status |
@@ -46,6 +46,11 @@ rather than falsely `failed`; a synthesized `gateway.crashed` records why.
 Migrations are ordered, embedded SQL transactions. The daemon refuses to run
 against a database newer than its supported schema. Destructive migrations use
 create-copy-verify-rename and are never mixed with retention work.
+
+Schema v2 adds `agent_id` to sessions and agent runs. Schema v3 backfills those
+columns from the immutable event ledger, then falls back to session and
+subagent attribution. This makes already-collected runs visible in the
+per-Agent timeline immediately after upgrade.
 
 ## Resource retention
 

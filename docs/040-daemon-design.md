@@ -23,10 +23,16 @@ cross-compilation. The wire protocol and SQLite schema remain language-neutral.
 | Prometheus Exporter | `/metrics` text exposition |
 | Retention Worker | Downsampling and expiry batches |
 
-## Listeners
+## Listeners and frontend separation
 
 - Event ingestion: `~/.openclaw-observatory/observatory.sock`.
-- Query/metrics: `127.0.0.1:10086` by default.
+- Backend query/metrics: `127.0.0.1:10087` by default.
+- Independent web/static proxy: `127.0.0.1:10086` by default.
+
+The daemon no longer embeds frontend assets. `observatory-web` reads a
+versioned Vite build from disk, serves `index.html` with `no-cache`, serves
+hashed assets as immutable, and proxies REST, SSE, health, and metrics to the
+backend. Frontend-only releases therefore require no daemon restart.
 
 The socket parent is `0700` and the socket is `0600`. A localhost HTTP debug
 ingestion endpoint is deliberately not exposed. Container scraping requires an
@@ -56,6 +62,7 @@ finish, closes SSE clients, removes the socket, and closes SQLite.
 
 ## Health
 
-`/health` means the process can answer. `/ready` requires a writable database,
+The public `/health` and `/ready` routes are proxied through the web service.
+`/health` means the backend process can answer. `/ready` requires a writable database,
 bound ingestion socket, and completed migrations. Gateway-down is operational
 state, not daemon unready state.

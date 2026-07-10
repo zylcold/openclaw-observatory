@@ -21,6 +21,13 @@ function cleanPayload(payload) {
   return Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined && value !== null && value !== ""));
 }
 
+function agentIdFromSessionKey(value) {
+  const sessionKey = cleanString(value);
+  if (!sessionKey) return undefined;
+  const match = /^agent:([^:]+):/i.exec(sessionKey);
+  return cleanString(match?.[1], 128);
+}
+
 export class Forwarder {
   constructor(config = {}, logger = console) {
     this.socketPath = config.socketPath || join(homedir(), ".openclaw-observatory", "observatory.sock");
@@ -109,6 +116,7 @@ export class Forwarder {
       runId: cleanString(evt.runId), sessionId: cleanString(evt.sessionId),
       sessionKeyHash: this.sessionKeyHash(evt.sessionKey), provider: cleanString(evt.provider, 128),
       model: cleanString(evt.model, 256), channel: cleanString(evt.channel, 64),
+      agentId: cleanString(evt.agentId, 128) || agentIdFromSessionKey(evt.sessionKey),
     };
     switch (evt.type) {
       case "run.started":
@@ -131,12 +139,7 @@ export class Forwarder {
         this.rememberCall(evt, value, failed ? "failed" : "completed"); this.enqueue(failed ? "llm.failed" : "llm.completed", value, "critical", evt.ts); break;
       }
       case "model.usage": {
-        const key = this.sessionKey(evt); const last = key ? this.lastCallBySession.get(key) : undefined; if (!last) break;
-        this.enqueue(last.status === "failed" ? "llm.failed" : "llm.completed", {
-          ...last.value, accountingUpdate: true, inputTokens: evt.lastCallUsage?.input ?? evt.usage?.input,
-          outputTokens: evt.lastCallUsage?.output ?? evt.usage?.output, cacheReadTokens: evt.lastCallUsage?.cacheRead ?? evt.usage?.cacheRead,
-          cacheWriteTokens: evt.lastCallUsage?.cacheWrite ?? evt.usage?.cacheWrite, costUsd: evt.costUsd,
-        }, "normal", evt.ts); break;
+        this.mapUsage(evt); break;
       }
       case "model.failover":
         this.enqueue("llm.retried", { sessionId: base.sessionId, sessionKeyHash: base.sessionKeyHash,
@@ -163,8 +166,57 @@ export class Forwarder {
     }
   }
 
-  sessionKey(evt) { return cleanString(evt.sessionId) || this.sessionKeyHash(evt.sessionKey); }
-  rememberCall(evt, value, status) { const key = this.sessionKey(evt); if (key) { this.lastCallBySession.delete(key); this.lastCallBySession.set(key, { value, status }); if (this.lastCallBySession.size > 1000) this.lastCallBySession.delete(this.lastCallBySession.keys().next().value); } }
+  callKeys(evt) {
+    return [...new Set([
+      cleanString(evt.runId) ? `run:${cleanString(evt.runId)}` : undefined,
+      this.sessionKeyHash(evt.sessionKey) ? `key:${this.sessionKeyHash(evt.sessionKey)}` : undefined,
+      cleanString(evt.sessionId) ? `session:${cleanString(evt.sessionId)}` : undefined,
+    ].filter(Boolean))];
+  }
+
+  rememberCall(evt, value, status) {
+    const keys = this.callKeys(evt);
+    for (const key of keys) {
+      this.lastCallBySession.delete(key);
+      this.lastCallBySession.set(key, { value, status });
+    }
+    while (this.lastCallBySession.size > 2000) this.lastCallBySession.delete(this.lastCallBySession.keys().next().value);
+
+  }
+
+  mapUsage(evt) {
+    const keys = this.callKeys(evt);
+    const last = keys.map((key) => this.lastCallBySession.get(key)).find(Boolean);
+    const usage = evt.lastCallUsage || evt.lastUsage || evt.usage || {};
+    if (!last) {
+      this.enqueue("llm.completed", {
+        runId: cleanString(evt.runId),
+        sessionId: cleanString(evt.sessionId),
+        sessionKeyHash: this.sessionKeyHash(evt.sessionKey),
+        provider: cleanString(evt.provider, 128),
+        model: cleanString(evt.model, 256),
+        accountingUpdate: true,
+        inputTokens: usage.input,
+        outputTokens: usage.output,
+        cacheReadTokens: usage.cacheRead,
+        cacheWriteTokens: usage.cacheWrite,
+        costUsd: evt.costUsd,
+      }, "normal", evt.ts);
+      return true;
+    }
+    this.enqueue(last.status === "failed" ? "llm.failed" : "llm.completed", {
+      ...last.value,
+      provider: cleanString(evt.provider, 128) || last.value.provider,
+      model: cleanString(evt.model, 256) || last.value.model,
+      accountingUpdate: true,
+      inputTokens: usage.input,
+      outputTokens: usage.output,
+      cacheReadTokens: usage.cacheRead,
+      cacheWriteTokens: usage.cacheWrite,
+      costUsd: evt.costUsd,
+    }, "normal", evt.ts);
+    return true;
+  }
 
   async flush(force = false) {
     if (this.inflight || !this.queue.length || (!force && Date.now() < this.nextAttemptAt)) return false;
@@ -190,4 +242,4 @@ export class Forwarder {
   }
 }
 
-export const privacy = { cleanString, cleanPayload, hash };
+export const privacy = { cleanString, cleanPayload, hash, agentIdFromSessionKey };

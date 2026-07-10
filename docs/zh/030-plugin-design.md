@@ -30,6 +30,8 @@
 
 未知 SDK 事件名称被忽略，不伪造任何 API。
 
+当显式配置 `plugins.entries.openclaw-observatory.hooks.allowConversationAccess=true` 时，适配器可从受支持的 `llm_output` Hook 复制规范化的数值用量字段（`input`、`output`、`cacheRead`、`cacheWrite`）。虽然该 Hook 事件也包含会话内容字段，但处理器只向转发器传递有界标识符和数值 usage，不会将提示词、响应或推理内容入队。usage 会按 run ID、稳定的会话密钥哈希或 session ID 关联到最后一次模型调用。
+
 ## 队列和失败策略
 
 - 默认容量：10,000 个事件。

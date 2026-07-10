@@ -1,6 +1,6 @@
 # REST 和 SSE API
 
-基础 URL：`http://127.0.0.1:10086`。除 `/metrics` 和 SSE 外，响应使用 JSON。默认监听器仅本地可用。
+基础 URL：`http://127.0.0.1:10086`。除 `/metrics` 和 SSE 外，响应使用 JSON。该地址默认由本地 Web 代理监听，后端监听 `127.0.0.1:10087`。
 
 ## 端点
 
@@ -56,12 +56,18 @@
 
 ```json
 {
-  "daemon":{"ready":true,"version":"0.1.0"},
+  "apiVersion":2,
+  "schemaVersion":3,
+  "capabilities":["agent-timeline-v2"],
+  "buildId":"20260710T130000Z-abc1234",
+  "daemon":{"ready":true,"version":"0.2.0"},
   "gateway":{"up":true,"instanceId":"local-abc123","pid":10207},
   "storage":{"events":832,"databaseBytes":1048576},
   "time":"2026-07-10T10:00:00Z"
 }
 ```
+
+前端会在渲染依赖新投影的功能前检查 `apiVersion` 和 `capabilities`。版本不匹配时会明确提示，而不是静默回退到旧可视化。
 
 ## SSE
 

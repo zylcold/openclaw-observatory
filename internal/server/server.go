@@ -17,10 +17,16 @@ import (
 
 	"github.com/zylcold/openclaw-observatory/internal/event"
 	"github.com/zylcold/openclaw-observatory/internal/storage"
-	webassets "github.com/zylcold/openclaw-observatory/web"
 )
 
-const Version = "0.1.0"
+const (
+	Version    = "0.2.0"
+	APIVersion = 2
+)
+
+var BuildID = "dev"
+
+var Capabilities = []string{"agent-timeline-v2"}
 
 type Server struct {
 	repo  *storage.Repository
@@ -59,7 +65,6 @@ func (s *Server) PublicHandler() http.Handler {
 	mux.HandleFunc("GET /api/v1/models/stats", s.modelStats)
 	mux.HandleFunc("GET /api/v1/events", s.events)
 	mux.HandleFunc("GET /api/v1/stream", s.stream)
-	mux.Handle("GET /", http.FileServer(http.FS(webassets.Files)))
 	return securityHeaders(mux)
 }
 
@@ -135,7 +140,16 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 500, "storage_error", "failed to query status")
 		return
 	}
-	v["daemon"] = map[string]any{"version": Version, "ready": s.ready.Load()}
+	schemaVersion, err := s.repo.SchemaVersion(r.Context())
+	if err != nil {
+		apiError(w, 500, "storage_error", "failed to query schema version")
+		return
+	}
+	v["apiVersion"] = APIVersion
+	v["schemaVersion"] = schemaVersion
+	v["capabilities"] = Capabilities
+	v["buildId"] = BuildID
+	v["daemon"] = map[string]any{"version": Version, "ready": s.ready.Load(), "buildId": BuildID}
 	v["time"] = time.Now().UTC()
 	data(w, v)
 }

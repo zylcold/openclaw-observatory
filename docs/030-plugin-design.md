@@ -35,6 +35,14 @@ over 64 KiB. It is a query surface, not part of event collection.
 
 Unknown SDK event names are ignored. No API is fabricated.
 
+The adapter can copy normalized numeric usage buckets (`input`, `output`,
+`cacheRead`, and `cacheWrite`) from the supported `llm_output` hook when
+`plugins.entries.openclaw-observatory.hooks.allowConversationAccess=true` is
+explicitly configured. Although that hook's event also contains conversation
+fields, the handler passes only bounded identifiers and numeric usage to the
+forwarder; prompt, response, and reasoning content are never queued. Usage is
+matched to the last call by run ID, stable hashed session key, or session ID.
+
 ## Queue and failure policy
 
 - Default capacity: 10,000 events.

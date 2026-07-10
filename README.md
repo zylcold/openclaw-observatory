@@ -51,7 +51,10 @@ flowchart LR
     D --> R[REST API]
     D --> E[SSE stream]
     D --> M[Prometheus metrics]
-    R --> UI[Local Dashboard]
+    W[Independent Web :10086] -->|same-origin proxy| R
+    W -->|same-origin proxy| E
+    W -->|same-origin proxy| M
+    W --> UI[Local Dashboard]
     M --> PR[Prometheus]
     PR --> G[Grafana]
 ```
@@ -66,9 +69,9 @@ the source of truth for query state.
 | --- | --- | --- |
 | Monitor plugin | `plugin/` | Adapt OpenClaw diagnostics and observation hooks into bounded events |
 | Agent Skill and Tool | `plugin/skills/`, `observatory_query` | Let agents read and explain local Observatory metadata safely |
-| Daemon | `cmd/observatoryd`, `internal/` | Receive, validate, deduplicate, reduce, persist, sample, and serve |
+| Daemon | `cmd/observatoryd`, `internal/` | Receive, validate, deduplicate, reduce, persist, sample, and expose APIs on `:10087` |
 | Event contract | `schemas/` | Draft 2020-12 envelope and payload limits |
-| Local dashboard | `web/` | Lightweight status and recent-event UI served by the daemon |
+| Local dashboard | `web/`, `cmd/observatory-web` | Vite-built UI served independently with same-origin API/SSE proxying |
 | Monitoring stack | `deploy/` | Optional Prometheus and Grafana deployment |
 
 ## Quick start
@@ -76,12 +79,16 @@ the source of truth for query state.
 Requirements: macOS, Go 1.24+, Node.js 22+, and OpenClaw `2026.6.11+`.
 
 ```bash
-# Build and test the daemon
+# Build the frontend and both local services
+npm ci --prefix web --include=dev
+VITE_BUILD_ID=dev npm run build --prefix web
 go test ./...
 go build -o ./bin/observatoryd ./cmd/observatoryd
+go build -o ./bin/observatory-web ./cmd/observatory-web
 
-# Start it in the foreground
-./bin/observatoryd
+# Start the API and web processes in separate terminals
+./bin/observatoryd --listen 127.0.0.1:10087
+./bin/observatory-web --web-root ./web/dist --backend http://127.0.0.1:10087
 
 # In another terminal, install/link and enable the plugin
 openclaw plugins install --link ./plugin
@@ -103,12 +110,19 @@ Runtime data defaults to `~/.openclaw-observatory/`:
 
 - `observatory.sock` — plugin-to-daemon Unix socket (`0600`);
 - `observatory.db` — SQLite database;
-- `observatory.pid` — daemon PID file when managed by the install script.
+- `logs/` — backend and web-service logs.
 
-For a per-user macOS background service, run `scripts/install-local.sh`. It
-builds the daemon, installs a LaunchAgent, links the plugin, enables it, and
-restarts the Gateway. Use `scripts/uninstall-local.sh` to remove the services;
-the database is preserved unless explicitly deleted.
+Versioned frontend releases are installed under
+`~/.local/share/openclaw-observatory/web/`; switching the `current` symlink
+publishes a frontend build without embedding it into the daemon binary.
+After the initial service installation, `scripts/publish-web.sh` builds and
+switches only the frontend release without rebuilding or restarting the daemon.
+
+For per-user macOS background services, run `scripts/install-local.sh`. It
+builds the Vite frontend, API daemon, and web proxy; installs two LaunchAgents;
+runs database migrations; verifies frontend/backend compatibility; links the
+plugin; and restarts the Gateway. Use `scripts/uninstall-local.sh` to remove the
+services; the database is preserved unless explicitly deleted.
 
 Once the plugin is enabled, OpenClaw also discovers the `openclaw-observatory`
 Skill and read-only `observatory_query` Tool. Agents can answer requests such as
@@ -129,7 +143,8 @@ docker compose -f deploy/docker-compose.yml up -d
 
 Docker Desktop scrapes `host.docker.internal:10086`. The daemon binds only to
 `127.0.0.1` by default, so container scraping is intentionally opt-in: start it
-with `-listen 0.0.0.0:10086` only on a trusted host firewall, or run Prometheus
+by binding `observatory-web --listen 0.0.0.0:10086` only behind a trusted host
+firewall, or run Prometheus
 directly on the host. The REST API contains local operational identifiers and
 must not be exposed to an untrusted network.
 
@@ -155,8 +170,9 @@ All collection and query timestamps are UTC RFC3339. List endpoints accept
 
 ## Privacy and security
 
-- Content capture is off by design; the plugin never forwards OpenClaw private
-  diagnostic payloads.
+- Content capture is off by design. When conversation-hook access is explicitly
+  enabled, the plugin copies only normalized numeric usage from `llm_output`;
+  it never forwards prompts, responses, or private diagnostic payloads.
 - Session keys are hashed before leaving the plugin. Raw user/chat identifiers,
   Prompt text, Tool parameters/results, paths, commands, and error messages are
   excluded.
