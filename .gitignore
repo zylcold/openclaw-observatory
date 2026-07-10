@@ -13,3 +13,4 @@ node_modules/
 *.sock
 deploy/grafana/data/
 deploy/prometheus/data/
+web/.env
