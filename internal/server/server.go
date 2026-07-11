@@ -373,7 +373,7 @@ func options(r *http.Request) (storage.ListOptions, error) {
 			}
 		}
 	}
-	return storage.ListOptions{Limit: n, InstanceID: q.Get("instanceId"), AgentID: q.Get("agentId"), From: q.Get("from"), To: q.Get("to"), Status: q.Get("status")}, nil
+	return storage.ListOptions{Limit: n, Cursor: q.Get("cursor"), InstanceID: q.Get("instanceId"), AgentID: q.Get("agentId"), From: q.Get("from"), To: q.Get("to"), Status: q.Get("status")}, nil
 }
 
 func list(w http.ResponseWriter, v []map[string]any, err error, limit int) {
@@ -381,7 +381,31 @@ func list(w http.ResponseWriter, v []map[string]any, err error, limit int) {
 		apiError(w, 500, "storage_error", "query failed")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"data": v, "page": map[string]any{"limit": limit, "nextCursor": nil}})
+	// Cursor pagination: if we got limit+1 rows, trim to limit and encode nextCursor.
+	nextCursor := ""
+	if len(v) > limit {
+		v = v[:limit]
+		if len(v) > 0 {
+			last := v[len(v)-1]
+			pos := map[string]any{}
+			if t, ok := last["startedAt"].(string); ok && t != "" {
+				pos["t"] = t
+			} else if t, ok := last["occurredAt"].(string); ok && t != "" {
+				pos["t"] = t
+			} else if t, ok := last["sampledAt"].(string); ok && t != "" {
+				pos["t"] = t
+			}
+			if id, ok := last["eventId"].(string); ok {
+				pos["id"] = id
+			} else if id, ok := last["sessionId"].(string); ok {
+				pos["id"] = id
+			} else if id, ok := last["runId"].(string); ok {
+				pos["id"] = id
+			}
+			nextCursor = storage.EncodeCursor(pos)
+		}
+	}
+	writeJSON(w, 200, map[string]any{"data": v, "page": map[string]any{"limit": limit, "nextCursor": nextCursor}})
 }
 func detail(w http.ResponseWriter, v map[string]any, err error) {
 	if errors.Is(err, sql.ErrNoRows) {

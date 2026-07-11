@@ -345,5 +345,4 @@ func (r *Repository) Count(ctx context.Context, table string) (int64, error) {
 	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table).Scan(&n)
 	return n, err
 }
-
 func JSON(v any) json.RawMessage { b, _ := json.Marshal(v); return b }
