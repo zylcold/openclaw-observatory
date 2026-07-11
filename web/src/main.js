@@ -16,7 +16,62 @@ let error = "";
 let settingsOpen = false;
 let refreshTimer = null;
 let streamTimer = null;
+let interactionTimer = null;
+let interactionUntil = 0;
+let pointerActive = false;
+let dragActive = false;
+let openSelect = null;
+let deferredRender = false;
 let hasRenderedData = false;
+
+const INTERACTION_IDLE_MS = 600;
+
+function interactionActive() {
+  return settingsOpen || pointerActive || dragActive || Boolean(openSelect?.isConnected) || Date.now() < interactionUntil;
+}
+
+function flushDeferredRender() {
+  clearTimeout(interactionTimer);
+  if (interactionActive()) {
+    interactionTimer = setTimeout(flushDeferredRender, Math.max(250, interactionUntil - Date.now()));
+    return;
+  }
+  if (deferredRender) {
+    deferredRender = false;
+    render({ preserveView: true });
+  }
+}
+
+function markInteraction(delay = INTERACTION_IDLE_MS) {
+  interactionUntil = Math.max(interactionUntil, Date.now() + delay);
+  clearTimeout(interactionTimer);
+  interactionTimer = setTimeout(flushDeferredRender, delay);
+}
+
+function closeSelect(select) {
+  if (openSelect !== select) return;
+  openSelect = null;
+  markInteraction(100);
+}
+
+function bindInteractionGuard() {
+  document.addEventListener("pointerdown", (event) => {
+    pointerActive = true;
+    const select = event.target.closest?.("select");
+    if (select) openSelect = select;
+    else if (openSelect && openSelect !== event.target) openSelect = null;
+    markInteraction();
+  }, { capture: true, passive: true });
+  document.addEventListener("pointerup", () => { pointerActive = false; markInteraction(); }, { capture: true, passive: true });
+  document.addEventListener("pointercancel", () => { pointerActive = false; markInteraction(); }, { capture: true, passive: true });
+  window.addEventListener("blur", () => { pointerActive = false; markInteraction(); }, { passive: true });
+  document.addEventListener("scroll", () => markInteraction(), { capture: true, passive: true });
+  document.addEventListener("change", (event) => closeSelect(event.target), true);
+  document.addEventListener("focusout", (event) => closeSelect(event.target), true);
+  document.addEventListener("keydown", (event) => {
+    if ((event.key === "Escape" || event.key === "Enter") && openSelect) closeSelect(openSelect);
+  }, true);
+}
 
 function captureView() {
   const elements = [];
@@ -39,7 +94,13 @@ function restoreView(view) {
   window.scrollTo(view.windowX, view.windowY);
 }
 
-function render({ preserveView = false } = {}) {
+function render({ preserveView = false, deferWhileInteracting = false } = {}) {
+  if (deferWhileInteracting && interactionActive()) {
+    deferredRender = true;
+    markInteraction();
+    return;
+  }
+  deferredRender = false;
   const view = preserveView ? captureView() : null;
   destroyCharts();
   setChartAnimation(!preserveView && !hasRenderedData);
@@ -55,8 +116,12 @@ function render({ preserveView = false } = {}) {
   });
 }
 
-async function refresh({ keepRange = false } = {}) {
+async function refresh({ keepRange = false, automatic = false } = {}) {
   if (loading) return;
+  if (automatic && interactionActive()) {
+    schedule(750);
+    return;
+  }
   const background = Boolean(data);
   loading = true; error = "";
   if (!keepRange) filters = timeFilters(filters.range, filters.instanceId, filters.agentId);
@@ -75,17 +140,14 @@ async function refresh({ keepRange = false } = {}) {
   } finally {
     loading = false;
     document.documentElement.classList.remove("refreshing");
-    render({ preserveView: background });
+    render({ preserveView: background, deferWhileInteracting: background });
     schedule();
   }
 }
 
-function schedule() {
+function schedule(delay = config.refreshInterval) {
   clearTimeout(refreshTimer);
-  if (config.refreshInterval > 0) refreshTimer = setTimeout(() => {
-    if (settingsOpen) schedule();
-    else refresh();
-  }, config.refreshInterval);
+  if (config.refreshInterval > 0) refreshTimer = setTimeout(() => refresh({ automatic: true }), delay);
 }
 
 function updateConfig(next) {
@@ -122,14 +184,14 @@ function bind() {
 function bindDrag() {
   let dragged = "";
   document.querySelectorAll("[data-module]").forEach((panel) => {
-    panel.addEventListener("dragstart", () => { dragged = panel.dataset.module; panel.classList.add("dragging"); });
-    panel.addEventListener("dragend", () => panel.classList.remove("dragging"));
+    panel.addEventListener("dragstart", () => { dragged = panel.dataset.module; dragActive = true; panel.classList.add("dragging"); });
+    panel.addEventListener("dragend", () => { dragActive = false; panel.classList.remove("dragging"); markInteraction(); });
     panel.addEventListener("dragover", (event) => event.preventDefault());
     panel.addEventListener("drop", (event) => {
       event.preventDefault(); const target = panel.dataset.module;
       if (!dragged || dragged === target) return;
       const modules = [...config.modules]; const from = modules.findIndex((m) => m.id === dragged); const to = modules.findIndex((m) => m.id === target);
-      const [item] = modules.splice(from, 1); modules.splice(to, 0, item); dragged = ""; updateConfig({ ...config, modules });
+      const [item] = modules.splice(from, 1); modules.splice(to, 0, item); dragged = ""; dragActive = false; updateConfig({ ...config, modules });
     });
   });
 }
@@ -138,11 +200,16 @@ function connectStream() {
   const stream = new EventSource("/api/v1/stream");
   stream.addEventListener("monitor-event", () => {
     clearTimeout(streamTimer);
-    streamTimer = setTimeout(() => { if (!settingsOpen) refresh(); }, 800);
+    const refreshFromStream = () => {
+      if (interactionActive()) streamTimer = setTimeout(refreshFromStream, 750);
+      else refresh({ automatic: true });
+    };
+    streamTimer = setTimeout(refreshFromStream, 800);
   });
   stream.onerror = () => { stream.close(); setTimeout(connectStream, 5000); };
 }
 
+bindInteractionGuard();
 render();
 refresh();
 connectStream();
