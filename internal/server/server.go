@@ -20,13 +20,13 @@ import (
 )
 
 const (
-	Version    = "0.3.0"
+	Version    = "0.4.0"
 	APIVersion = 3
 )
 
 var BuildID = "dev"
 
-var Capabilities = []string{"agent-stats-v3", "session-waterfall-v3", "timeseries-v3", "dashboard-config-v3", "disk-space-v3"}
+var Capabilities = []string{"agent-stats-v3", "session-waterfall-v3", "timeseries-v3", "dashboard-config-v3", "disk-space-v3", "cost-trends-v4", "cursor-pagination-v4"}
 
 type Server struct {
 	repo  *storage.Repository
@@ -70,6 +70,8 @@ func (s *Server) PublicHandler() http.Handler {
 	mux.HandleFunc("GET /api/v1/tools/stats", s.toolStats)
 	mux.HandleFunc("GET /api/v1/models/stats", s.modelStats)
 	mux.HandleFunc("GET /api/v1/events", s.events)
+	mux.HandleFunc("GET /api/v1/cost/trends", s.costTrends)
+	mux.HandleFunc("GET /api/v1/cost/summary", s.costSummary)
 	mux.HandleFunc("GET /api/v1/stream", s.stream)
 	return securityHeaders(mux)
 }
@@ -318,6 +320,38 @@ func (s *Server) timeseries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v["bucket"] = bucket
+	data(w, v)
+}
+
+func (s *Server) costTrends(w http.ResponseWriter, r *http.Request) {
+	o, err := options(r)
+	if err != nil {
+		apiError(w, 400, "invalid_query", err.Error())
+		return
+	}
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "day"
+	}
+	if period != "day" && period != "week" && period != "month" {
+		apiError(w, 400, "invalid_query", "period must be day, week, or month")
+		return
+	}
+	v, e := s.repo.CostTrends(r.Context(), o, period)
+	list(w, v, e, 200)
+}
+
+func (s *Server) costSummary(w http.ResponseWriter, r *http.Request) {
+	o, err := options(r)
+	if err != nil {
+		apiError(w, 400, "invalid_query", err.Error())
+		return
+	}
+	v, e := s.repo.CostSummary(r.Context(), o)
+	if e != nil {
+		apiError(w, 500, "storage_error", "query failed")
+		return
+	}
 	data(w, v)
 }
 

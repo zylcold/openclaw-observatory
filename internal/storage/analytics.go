@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"fmt"
 )
 
 func analyticsArgs(o ListOptions) []any {
@@ -265,4 +266,65 @@ func (r *Repository) TimeSeries(ctx context.Context, opts ListOptions, bucketSec
 		"models":        models,
 		"agents":        agents,
 	}, nil
+}
+
+// CostTrends returns daily cost breakdowns grouped by provider/model and agent.
+// The period parameter controls the grouping: "day", "week", or "month".
+func (r *Repository) CostTrends(ctx context.Context, opts ListOptions, period string) ([]map[string]any, error) {
+	var dateFormat string
+	switch period {
+	case "week":
+		dateFormat = `strftime('%Y-W%W', started_at)`
+	case "month":
+		dateFormat = `strftime('%Y-%m', started_at)`
+	default:
+		dateFormat = `strftime('%Y-%m-%d', started_at)`
+	}
+
+	// Cost by provider/model per period
+	q := fmt.Sprintf(`WITH %s
+  SELECT %s AS period,
+    COALESCE(NULLIF(l.provider,''),'unknown') AS provider,
+    COALESCE(NULLIF(l.model,''),'unknown') AS model,
+    COUNT(*) AS requests,
+    SUM(l.input_tokens) AS inputTokens,
+    SUM(l.output_tokens) AS outputTokens,
+    SUM(l.cache_read_tokens) AS cacheReadTokens,
+    SUM(l.cache_write_tokens) AS cacheWriteTokens,
+    SUM(l.cost_usd) AS costUsd
+  FROM llm_calls l LEFT JOIN run_agents r ON r.instance_id=l.instance_id AND r.run_id=l.run_id
+  WHERE (@instance='' OR l.instance_id=@instance)
+    AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to)
+    AND (@agent='' OR r.agent_id=@agent)
+  GROUP BY period, l.provider, l.model
+  ORDER BY period DESC, costUsd DESC`, runAgentsCTE, dateFormat)
+
+	return queryMaps(ctx, r.db, q, analyticsArgs(opts)...)
+}
+
+// CostSummary returns aggregate cost stats for the given period.
+func (r *Repository) CostSummary(ctx context.Context, opts ListOptions) (map[string]any, error) {
+	q := fmt.Sprintf(`WITH %s
+  SELECT
+    COUNT(*) AS totalRequests,
+    SUM(l.cost_usd) AS totalCost,
+    SUM(l.input_tokens+l.output_tokens+l.cache_read_tokens+l.cache_write_tokens) AS totalTokens,
+    AVG(l.cost_usd) AS avgCostPerRequest,
+    MAX(l.cost_usd) AS maxCostPerRequest,
+    SUM(CASE WHEN l.started_at >= datetime('now', '-1 day') THEN l.cost_usd ELSE 0 END) AS lastDayCost,
+    SUM(CASE WHEN l.started_at >= datetime('now', '-7 days') THEN l.cost_usd ELSE 0 END) AS lastWeekCost,
+    SUM(CASE WHEN l.started_at >= datetime('now', '-30 days') THEN l.cost_usd ELSE 0 END) AS lastMonthCost
+  FROM llm_calls l LEFT JOIN run_agents r ON r.instance_id=l.instance_id AND r.run_id=l.run_id
+  WHERE (@instance='' OR l.instance_id=@instance)
+    AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to)
+    AND (@agent='' OR r.agent_id=@agent)`, runAgentsCTE)
+
+	rows, err := queryMaps(ctx, r.db, q, analyticsArgs(opts)...)
+	if err != nil || len(rows) == 0 {
+		if err == nil {
+			return map[string]any{"totalRequests": 0, "totalCost": 0, "totalTokens": 0}, nil
+		}
+		return nil, err
+	}
+	return rows[0], nil
 }
