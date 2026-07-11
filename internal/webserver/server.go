@@ -82,7 +82,7 @@ func securityHeaders(next http.Handler, buildID string) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://openrouter.ai")
 		w.Header().Set("X-Observatory-Web-Service-Build", buildID)
 		next.ServeHTTP(w, r)
 	})
