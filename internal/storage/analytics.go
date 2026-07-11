@@ -274,11 +274,11 @@ func (r *Repository) CostTrends(ctx context.Context, opts ListOptions, period st
 	var dateFormat string
 	switch period {
 	case "week":
-		dateFormat = `strftime('%Y-W%W', started_at)`
+		dateFormat = `strftime('%Y-W%W', l.started_at)`
 	case "month":
-		dateFormat = `strftime('%Y-%m', started_at)`
+		dateFormat = `strftime('%Y-%m', l.started_at)`
 	default:
-		dateFormat = `strftime('%Y-%m-%d', started_at)`
+		dateFormat = `strftime('%Y-%m-%d', l.started_at)`
 	}
 
 	// Cost by provider/model per period
