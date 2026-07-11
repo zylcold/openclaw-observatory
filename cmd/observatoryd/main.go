@@ -37,6 +37,9 @@ func run() error {
 	dbPath := flag.String("db", "", "SQLite path (default: data-dir/observatory.db)")
 	listenAddr := flag.String("listen", "127.0.0.1:10087", "REST/SSE/metrics listen address")
 	sampleInterval := flag.Duration("sample-interval", 5*time.Second, "process resource sample interval")
+	retentionEvents := flag.Int("retention-events-days", 7, "raw events retention period in days (0 = unlimited)")
+	retentionSamples := flag.Int("retention-samples-days", 30, "resource_samples retention period in days (0 = unlimited)")
+	retentionAll := flag.Int("retention-all-days", 0, "hard cap for projection tables in days (0 = disabled)")
 	flag.Parse()
 	if *socketPath == "" {
 		*socketPath = filepath.Join(*dataDir, "observatory.sock")
@@ -80,10 +83,19 @@ func run() error {
 			errCh <- e
 		}
 	}()
+	retentionJob := storage.NewRetentionJob(repo, storage.RetentionConfig{
+		RawEventsDays: *retentionEvents,
+		SamplesDays:   *retentionSamples,
+		AllDays:       *retentionAll,
+	}, logger)
+	stopRetention := retentionJob.Start()
+	defer stopRetention()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	collector := process.NewCollector(repo, *sampleInterval, srv.Insert)
 	go collector.Run(ctx)
-	logger.Info("OpenClaw Observatory ready", "http", "http://"+*listenAddr, "socket", *socketPath, "database", *dbPath, "version", server.Version)
+	logger.Info("OpenClaw Observatory ready", "http", "http://"+*listenAddr, "socket", *socketPath, "database", *dbPath, "version", server.Version,
+		"retention_events_days", *retentionEvents, "retention_samples_days", *retentionSamples, "retention_all_days", *retentionAll)
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	select {
