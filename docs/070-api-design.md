@@ -27,6 +27,8 @@ SSE. The default listener is the local web proxy; the backend listens on
 | `GET /api/v1/tools/stats` | Tool aggregates |
 | `GET /api/v1/models/stats` | Model aggregates |
 | `GET /api/v1/events` | Metadata events |
+| `GET /api/v1/cost/trends` | Daily/weekly/monthly cost breakdown by model |
+| `GET /api/v1/cost/summary` | Aggregate cost stats (day/week/month rolls) |
 | `GET /api/v1/stream` | Live metadata events over SSE |
 
 ## Query conventions
