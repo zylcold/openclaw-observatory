@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#26d6a2"/>
+      <stop offset="1" stop-color="#168bc5"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.6"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- Radar/observatory rings -->
+  <circle cx="256" cy="256" r="150" fill="none" stroke="url(#ring)" stroke-width="3" opacity="0.3"/>
+  <circle cx="256" cy="256" r="105" fill="none" stroke="url(#ring)" stroke-width="3" opacity="0.45"/>
+  <circle cx="256" cy="256" r="60" fill="none" stroke="url(#ring)" stroke-width="3" opacity="0.6"/>
+  <!-- Radar sweep -->
+  <path d="M256 256 L256 106 A150 150 0 0 1 406 256 Z" fill="url(#ring)" opacity="0.12"/>
+  <!-- Center dot -->
+  <circle cx="256" cy="256" r="14" fill="#fff"/>
+  <!-- Pulse dots -->
+  <circle cx="362" cy="150" r="9" fill="#fff" opacity="0.9"/>
+  <circle cx="150" cy="362" r="7" fill="#fff" opacity="0.7"/>
+  <circle cx="388" cy="320" r="6" fill="#fff" opacity="0.6"/>
+  <!-- Bar chart at bottom -->
+  <rect x="196" y="372" width="24" height="44" rx="4" fill="#fff" opacity="0.85"/>
+  <rect x="244" y="352" width="24" height="64" rx="4" fill="#fff" opacity="0.95"/>
+  <rect x="292" y="384" width="24" height="32" rx="4" fill="#fff" opacity="0.75"/>
+</svg>
