@@ -1,5 +1,7 @@
 const API = "/api/v1";
 
+import { patchDashboardCosts, getPricing } from "./pricing.js";
+
 function query(params = {}) {
   const q = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
@@ -32,7 +34,10 @@ export async function loadDashboard(filters) {
     get("/cost/trends", { ...common, period: "day" }),
     get("/cost/summary", common),
   ]);
-  return { status, timeseries, models, tools, agents, sessions, llmCalls, errors, subagents, mcpCalls, costTrends, costSummary };
+  const data = { status, timeseries, models, tools, agents, sessions, llmCalls, errors, subagents, mcpCalls, costTrends, costSummary };
+  // Patch costs using cached pricing data (computed from token counts)
+  patchDashboardCosts(data, getPricing());
+  return data;
 }
 
 export const loadSession = (sessionId) => get(`/sessions/${encodeURIComponent(sessionId)}`);

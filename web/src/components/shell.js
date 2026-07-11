@@ -1,6 +1,7 @@
 import { MODULES } from "../config.js";
 import { esc } from "../format.js";
 import { RANGE_KEYS } from "../state.js";
+import { getPricingTimestamp } from "../pricing.js";
 import { moduleHTML } from "./modules.js";
 
 export function shell({ config, data, filters, loading, error, settingsOpen, sessionDetail }) {
@@ -33,6 +34,7 @@ export function shell({ config, data, filters, loading, error, settingsOpen, ses
       <header><div><h2>Dashboard 配置</h2><p>显隐、顺序、刷新与阈值均保存为 JSON</p></div><button id="settings-close">×</button></header>
       <label>自动刷新<select id="refresh-interval"><option value="5000">5 秒</option><option value="15000">15 秒</option><option value="30000">30 秒</option><option value="60000">60 秒</option><option value="0">关闭</option></select></label>
       <fieldset><legend>模块显隐</legend>${config.modules.map((m) => `<label class="check"><input type="checkbox" data-module-visible="${m.id}" ${m.visible ? "checked" : ""}>${esc(moduleNames.get(m.id))}</label>`).join("")}</fieldset>
+      <div class="pricing-section"><div class="pricing-header"><span>模型定价</span><small id="pricing-timestamp">${(() => { const ts = getPricingTimestamp(); return ts ? `更新于 ${ts.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}` : "未获取"; })()}</small></div><button id="refresh-pricing" class="drawer-button">从 OpenRouter 刷新定价</button><small class="pricing-hint">成本基于 token 用量 × 模型定价计算</small></div>
       <label>Dashboard JSON<textarea id="config-json" spellcheck="false">${esc(JSON.stringify(config, null, 2))}</textarea></label>
       <div class="drawer-actions"><button id="config-reset">恢复默认</button><button id="config-save" class="primary">应用 JSON</button></div>
     </aside>`;
