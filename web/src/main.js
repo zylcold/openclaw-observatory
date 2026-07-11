@@ -3,7 +3,7 @@ import { loadDashboard, loadSession } from "./api.js";
 import { loadConfig, resetConfig, saveConfig } from "./config.js";
 import { destroyCharts, setChartAnimation } from "./charts.js";
 import { timeFilters } from "./state.js";
-import { paintCharts } from "./components/modules.js";
+import { paintCharts, updateCharts, updateNonChartDOM, updateAgentTable } from "./components/modules.js";
 import { shell } from "./components/shell.js";
 
 const app = document.getElementById("app");
@@ -116,6 +116,21 @@ function render({ preserveView = false, deferWhileInteracting = false } = {}) {
   });
 }
 
+/**
+ * Incrementally update charts and KPI text without full re-render.
+ * Falls back to full render if charts don't exist yet.
+ */
+function incrementalUpdate() {
+  if (!data || !hasRenderedData) return false;
+  const app = document.getElementById("app");
+  if (!app) return false;
+  const ok = updateCharts(data);
+  if (!ok) return false;
+  updateNonChartDOM(app, data, config);
+  updateAgentTable(app, data);
+  return true;
+}
+
 async function refresh({ keepRange = false, automatic = false } = {}) {
   if (loading) return;
   if (automatic && interactionActive()) {
@@ -140,7 +155,15 @@ async function refresh({ keepRange = false, automatic = false } = {}) {
   } finally {
     loading = false;
     document.documentElement.classList.remove("refreshing");
-    render({ preserveView: background, deferWhileInteracting: background });
+    // For background refreshes, try incremental update first.
+    // Only do full re-render on first load, error, or explicit user action.
+    if (background && !error && hasRenderedData) {
+      if (!incrementalUpdate()) {
+        render({ preserveView: true, deferWhileInteracting: true });
+      }
+    } else {
+      render({ preserveView: background, deferWhileInteracting: background });
+    }
     schedule();
   }
 }
@@ -204,7 +227,8 @@ function connectStream() {
       if (interactionActive()) streamTimer = setTimeout(refreshFromStream, 750);
       else refresh({ automatic: true });
     };
-    streamTimer = setTimeout(refreshFromStream, 800);
+    // Debounce multiple rapid SSE events into a single refresh
+    streamTimer = setTimeout(refreshFromStream, 1000);
   });
   stream.onerror = () => { stream.close(); setTimeout(connectStream, 5000); };
 }

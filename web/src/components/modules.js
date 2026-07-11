@@ -1,4 +1,4 @@
-import { comboChart, doughnutChart, lineChart, palette, scatterChart } from "../charts.js";
+import { comboChart, doughnutChart, lineChart, palette, scatterChart, updateChartData, updateDoughnut, updateScatter, hasChart } from "../charts.js";
 import { bytes, compact, esc, money, ms, num, shortTime } from "../format.js";
 
 const names = {
@@ -145,4 +145,121 @@ export function paintCharts(data) {
     { type: "line", label: "Token", data: data.agents.map((a) => a.totalTokens), borderColor: palette[1], yAxisID: "y1" },
     { type: "line", label: "错误率 %", data: data.agents.map((a) => a.errorRate), borderColor: palette[4], yAxisID: "y2" },
   ], { scales: { y: { beginAtZero: true }, y1: { position: "right", beginAtZero: true, grid: { drawOnChartArea: false } }, y2: { display: false } } });
+}
+
+/**
+ * Incrementally update existing charts without destroying them.
+ * Returns true if all charts were updated in-place, false if a full re-render is needed.
+ */
+export function updateCharts(data) {
+  const points = data.timeseries?.points || [];
+  const labels = points.map((p) => shortTime(p.time));
+
+  // Check if all chart canvases exist.
+  const requiredCharts = ["resources-chart", "llm-combo-chart", "model-token-chart", "token-share-chart", "tool-share-chart", "scatter-chart", "agent-chart"];
+  const allExist = requiredCharts.every((id) => hasChart(id));
+  if (!allExist) return false;
+
+  // Resource chart
+  updateChartData("resources-chart", labels, [
+    { data: points.map((p) => Number(p.averageMemoryBytes || 0) / 1048576) },
+    { data: points.map((p) => p.averageCpuPercent || 0) },
+    { data: points.map((p) => p.diskUsedPercent || 0) },
+  ]);
+
+  // LLM combo chart
+  updateChartData("llm-combo-chart", labels, [
+    { data: points.map((p) => p.llmRequests || 0) },
+    { data: points.map((p) => p.averageLlmDurationMs || 0) },
+    { data: points.map((p) => p.llmErrorRate || 0) },
+  ]);
+
+  // Model token chart (datasets may change if models appear/disappear)
+  const modelRows = data.timeseries?.models || [];
+  const modelKeys = [...new Set(modelRows.map((r) => `${r.provider}/${r.model}`))];
+  const timeKeys = [...new Set(modelRows.map((r) => r.time))];
+  const byModelTime = new Map(modelRows.map((r) => [`${r.provider}/${r.model}|${r.time}`, Number(r.inputTokens || 0) + Number(r.outputTokens || 0) + Number(r.cacheReadTokens || 0) + Number(r.cacheWriteTokens || 0)]));
+  const modelDatasets = modelKeys.map((key, i) => ({ label: key, data: timeKeys.map((time) => byModelTime.get(`${key}|${time}`) || 0), borderColor: palette[i % palette.length], backgroundColor: `${palette[i % palette.length]}33`, fill: true, stack: "tokens", pointRadius: 0 }));
+  updateChartData("model-token-chart", timeKeys.map(shortTime), modelDatasets);
+
+  // Token share doughnut
+  updateDoughnut("token-share-chart",
+    data.models.map((m) => `${m.provider}/${m.model}`),
+    data.models.map((m) => Number(m.inputTokens || 0) + Number(m.outputTokens || 0) + Number(m.cacheReadTokens || 0) + Number(m.cacheWriteTokens || 0)));
+
+  // Tool share doughnut
+  const topTools = data.tools.slice(0, 7);
+  const otherToolCalls = data.tools.slice(7).reduce((total, tool) => total + Number(tool.calls || 0), 0);
+  const toolLabels = topTools.map((tool) => `${tool.source}:${tool.tool}`);
+  const toolValues = topTools.map((tool) => tool.calls);
+  if (otherToolCalls > 0) { toolLabels.push("其他"); toolValues.push(otherToolCalls); }
+  updateDoughnut("tool-share-chart", toolLabels, toolValues);
+
+  // Scatter chart
+  const scatterGroups = new Map();
+  data.llmCalls.forEach((call) => {
+    const key = `${call.provider || "unknown"}/${call.model || "unknown"}`;
+    if (!scatterGroups.has(key)) scatterGroups.set(key, []);
+    scatterGroups.get(key).push({ x: Number(call.totalTokens || 0), y: Number(call.durationMs || 0), call });
+  });
+  const scatterDatasets = [...scatterGroups].map(([label, values], i) => ({ label, data: values, backgroundColor: palette[i % palette.length], pointRadius: 4 }));
+  updateScatter("scatter-chart", scatterDatasets);
+
+  // Agent chart
+  updateChartData("agent-chart", data.agents.map((a) => a.agentId), [
+    { data: data.agents.map((a) => a.runs) },
+    { data: data.agents.map((a) => a.totalTokens) },
+    { data: data.agents.map((a) => a.errorRate) },
+  ]);
+
+  return true;
+}
+
+/**
+ * Update KPI cards and tables in-place without full re-render.
+ * Only updates text content; chart updates handled by updateCharts().
+ */
+export function updateNonChartDOM(app, data, config) {
+  // Update KPI cards
+  const agents = data?.agents || [];
+  const sum = (key) => agents.reduce((total, row) => total + Number(row[key] || 0), 0);
+  const runs = sum("runs");
+  const errors = sum("runErrors");
+  const errorRate = runs ? 100 * errors / runs : 0;
+  const latency = sum("llmRequests") ? agents.reduce((v, row) => v + Number(row.llmDurationMs || 0), 0) / sum("llmRequests") : 0;
+  const disk = [...(data?.timeseries?.points || [])].reverse().find((point) => Number(point.diskTotalBytes || 0) > 0) || {};
+
+  const kpiValues = [
+    compact(runs),
+    compact(sum("llmRequests")),
+    compact(sum("totalTokens")),
+    compact(sum("toolCalls")),
+    ms(latency),
+    money(sum("costUsd")),
+    `${Number(disk.diskUsedPercent || 0).toFixed(1)}%`,
+  ];
+  const kpiCards = app.querySelectorAll(".kpi strong");
+  kpiCards.forEach((el, i) => { if (kpiValues[i] !== undefined) el.textContent = kpiValues[i]; });
+
+  // Update KPI notes
+  const kpiNotes = [
+    `${errors} failed`,
+    `${errorRate.toFixed(1)}% run errors`,
+    `${compact(sum("cacheReadTokens"))} cache read`,
+    `${sum("toolErrors")} errors`,
+    `${agents.length} agents`,
+    "reported cost",
+    `${bytes(disk.diskAvailableBytes)} available`,
+  ];
+  const noteEls = app.querySelectorAll(".kpi small");
+  noteEls.forEach((el, i) => { if (kpiNotes[i] !== undefined) el.textContent = kpiNotes[i]; });
+}
+
+/**
+ * Update the agent comparison table in-place.
+ */
+export function updateAgentTable(app, data) {
+  const tbody = app.querySelector(".module-agent_compare tbody");
+  if (!tbody || !data.agents.length) return;
+  tbody.innerHTML = data.agents.map((a) => `<tr><td><b>${esc(a.agentId)}</b></td><td>${num(a.runs)}</td><td>${compact(a.totalTokens)}</td><td>${num(a.toolCalls)}</td><td>${ms(a.averageDurationMs)}</td><td>${Number(a.errorRate || 0).toFixed(1)}%</td><td>${money(a.costUsd)}</td></tr>`).join("");
 }
