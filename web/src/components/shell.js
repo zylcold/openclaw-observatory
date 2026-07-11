@@ -12,7 +12,7 @@ export function shell({ config, data, filters, loading, error, settingsOpen, ses
   const moduleNames = new Map(MODULES);
   return `
     <nav class="topbar">
-      <div class="brand"><i></i><div><strong>OpenClaw Observatory</strong><span>v0.3</span></div></div>
+      <div class="brand"><i></i><div><strong>OpenClaw Observatory</strong><span>v0.4</span></div></div>
       <div class="toolbar">
         <div class="gateway"><i class="${gatewayUp ? "up" : "down"}"></i>${gatewayUp ? "Gateway online" : "Gateway offline"}</div>
         <div class="ranges">${RANGE_KEYS.map((key) => `<button data-range="${key}" class="${filters.range === key ? "active" : ""}">${key}</button>`).join("")}</div>
@@ -26,7 +26,7 @@ export function shell({ config, data, filters, loading, error, settingsOpen, ses
     <main>
       <div class="page-title"><div><h1>运行概览</h1><p>${filters.from.slice(0, 16).replace("T", " ")} — ${filters.to.slice(0, 16).replace("T", " ")} · ${filters.bucket} bucket</p></div><button id="refresh">${loading ? "刷新中…" : "立即刷新"}</button></div>
       ${error ? `<div class="banner error">${esc(error)}</div>` : ""}
-      <section id="dashboard" class="dashboard ${loading && !data ? "loading" : ""}">${data ? visible.map((m) => moduleHTML(m.id, data, config, sessionDetail)).join("") : `<div class="skeleton">正在加载 v0.3 指标…</div>`}</section>
+      <section id="dashboard" class="dashboard ${loading && !data ? "loading" : ""}">${data ? visible.map((m) => moduleHTML(m.id, data, config, sessionDetail)).join("") : `<div class="skeleton">正在加载 v0.4 指标…</div>`}</section>
     </main>
     <div class="drawer-backdrop ${settingsOpen ? "open" : ""}" id="drawer-backdrop"></div>
     <aside class="drawer ${settingsOpen ? "open" : ""}">

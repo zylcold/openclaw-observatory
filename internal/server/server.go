@@ -20,13 +20,13 @@ import (
 )
 
 const (
-	Version    = "0.3.0"
+	Version    = "0.4.0"
 	APIVersion = 3
 )
 
 var BuildID = "dev"
 
-var Capabilities = []string{"agent-stats-v3", "session-waterfall-v3", "timeseries-v3", "dashboard-config-v3", "disk-space-v3"}
+var Capabilities = []string{"agent-stats-v3", "session-waterfall-v3", "timeseries-v3", "dashboard-config-v3", "disk-space-v3", "cost-trends-v4", "cursor-pagination-v4"}
 
 type Server struct {
 	repo  *storage.Repository
@@ -70,6 +70,8 @@ func (s *Server) PublicHandler() http.Handler {
 	mux.HandleFunc("GET /api/v1/tools/stats", s.toolStats)
 	mux.HandleFunc("GET /api/v1/models/stats", s.modelStats)
 	mux.HandleFunc("GET /api/v1/events", s.events)
+	mux.HandleFunc("GET /api/v1/cost/trends", s.costTrends)
+	mux.HandleFunc("GET /api/v1/cost/summary", s.costSummary)
 	mux.HandleFunc("GET /api/v1/stream", s.stream)
 	return securityHeaders(mux)
 }
@@ -321,6 +323,38 @@ func (s *Server) timeseries(w http.ResponseWriter, r *http.Request) {
 	data(w, v)
 }
 
+func (s *Server) costTrends(w http.ResponseWriter, r *http.Request) {
+	o, err := options(r)
+	if err != nil {
+		apiError(w, 400, "invalid_query", err.Error())
+		return
+	}
+	period := r.URL.Query().Get("period")
+	if period == "" {
+		period = "day"
+	}
+	if period != "day" && period != "week" && period != "month" {
+		apiError(w, 400, "invalid_query", "period must be day, week, or month")
+		return
+	}
+	v, e := s.repo.CostTrends(r.Context(), o, period)
+	list(w, v, e, 200)
+}
+
+func (s *Server) costSummary(w http.ResponseWriter, r *http.Request) {
+	o, err := options(r)
+	if err != nil {
+		apiError(w, 400, "invalid_query", err.Error())
+		return
+	}
+	v, e := s.repo.CostSummary(r.Context(), o)
+	if e != nil {
+		apiError(w, 500, "storage_error", "query failed")
+		return
+	}
+	data(w, v)
+}
+
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	f, ok := w.(http.Flusher)
 	if !ok {
@@ -373,7 +407,7 @@ func options(r *http.Request) (storage.ListOptions, error) {
 			}
 		}
 	}
-	return storage.ListOptions{Limit: n, InstanceID: q.Get("instanceId"), AgentID: q.Get("agentId"), From: q.Get("from"), To: q.Get("to"), Status: q.Get("status")}, nil
+	return storage.ListOptions{Limit: n, Cursor: q.Get("cursor"), InstanceID: q.Get("instanceId"), AgentID: q.Get("agentId"), From: q.Get("from"), To: q.Get("to"), Status: q.Get("status")}, nil
 }
 
 func list(w http.ResponseWriter, v []map[string]any, err error, limit int) {
@@ -381,7 +415,31 @@ func list(w http.ResponseWriter, v []map[string]any, err error, limit int) {
 		apiError(w, 500, "storage_error", "query failed")
 		return
 	}
-	writeJSON(w, 200, map[string]any{"data": v, "page": map[string]any{"limit": limit, "nextCursor": nil}})
+	// Cursor pagination: if we got limit+1 rows, trim to limit and encode nextCursor.
+	nextCursor := ""
+	if len(v) > limit {
+		v = v[:limit]
+		if len(v) > 0 {
+			last := v[len(v)-1]
+			pos := map[string]any{}
+			if t, ok := last["startedAt"].(string); ok && t != "" {
+				pos["t"] = t
+			} else if t, ok := last["occurredAt"].(string); ok && t != "" {
+				pos["t"] = t
+			} else if t, ok := last["sampledAt"].(string); ok && t != "" {
+				pos["t"] = t
+			}
+			if id, ok := last["eventId"].(string); ok {
+				pos["id"] = id
+			} else if id, ok := last["sessionId"].(string); ok {
+				pos["id"] = id
+			} else if id, ok := last["runId"].(string); ok {
+				pos["id"] = id
+			}
+			nextCursor = storage.EncodeCursor(pos)
+		}
+	}
+	writeJSON(w, 200, map[string]any{"data": v, "page": map[string]any{"limit": limit, "nextCursor": nextCursor}})
 }
 func detail(w http.ResponseWriter, v map[string]any, err error) {
 	if errors.Is(err, sql.ErrNoRows) {

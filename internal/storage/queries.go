@@ -3,13 +3,49 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
 )
 
+// PageResult wraps a list query result with pagination metadata.
+type PageResult struct {
+	Data       []map[string]any `json:"data"`
+	NextCursor string           `json:"nextCursor"`
+}
+
+// EncodeCursor encodes a position map into a safe opaque string.
+func EncodeCursor(pos map[string]any) string {
+	return encodeCursor(pos)
+}
+
+// encodeCursor encodes a position map into a safe opaque string.
+func encodeCursor(pos map[string]any) string {
+	b, _ := json.Marshal(pos)
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// decodeCursor decodes an opaque cursor string back into a position map.
+// Returns nil if the cursor is empty or invalid.
+func decodeCursor(s string) map[string]any {
+	if s == "" {
+		return nil
+	}
+	b, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if json.Unmarshal(b, &m) != nil {
+		return nil
+	}
+	return m
+}
+
 type ListOptions struct {
 	Limit      int
+	Cursor     string
 	InstanceID string
 	AgentID    string
 	From       string
@@ -43,9 +79,24 @@ func (r *Repository) ListSessions(ctx context.Context, opts ListOptions) ([]map[
 		q += ` AND COALESCE(NULLIF(agent_id,''),'unknown')=?`
 		args = append(args, o.AgentID)
 	}
-	q += ` ORDER BY COALESCE(started_at,ended_at) DESC LIMIT ?`
-	args = append(args, o.Limit)
-	return queryMaps(ctx, r.db, q, args...)
+	// Cursor: sessions are ordered by COALESCE(started_at,ended_at) DESC, session_id DESC
+	if cur := decodeCursor(o.Cursor); cur != nil {
+		if t, ok := cur["t"].(string); ok {
+			q += ` AND COALESCE(started_at,ended_at)<=?`
+			args = append(args, t)
+		}
+		if id, ok := cur["id"].(string); ok && id != "" {
+			q += ` AND session_id<?`
+			args = append(args, id)
+		}
+	}
+	q += ` ORDER BY COALESCE(started_at,ended_at) DESC, session_id DESC LIMIT ?`
+	args = append(args, o.Limit+1) // fetch one extra to determine nextCursor
+	rows, err := queryMaps(ctx, r.db, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 func (r *Repository) ListRuns(ctx context.Context, opts ListOptions) ([]map[string]any, error) {
@@ -60,9 +111,23 @@ func (r *Repository) ListRuns(ctx context.Context, opts ListOptions) ([]map[stri
 		q += ` AND COALESCE(NULLIF(agent_runs.agent_id,''),NULLIF((SELECT agent_id FROM subagent_runs WHERE subagent_runs.instance_id=agent_runs.instance_id AND subagent_runs.subagent_id=agent_runs.run_id LIMIT 1),''),NULLIF((SELECT agent_id FROM sessions WHERE sessions.instance_id=agent_runs.instance_id AND sessions.session_id=agent_runs.session_id LIMIT 1),''),'unknown')=?`
 		args = append(args, o.AgentID)
 	}
-	q += ` ORDER BY COALESCE(started_at,ended_at) DESC LIMIT ?`
-	args = append(args, o.Limit)
-	return queryMaps(ctx, r.db, q, args...)
+	if cur := decodeCursor(o.Cursor); cur != nil {
+		if t, ok := cur["t"].(string); ok {
+			q += ` AND COALESCE(started_at,ended_at)<=?`
+			args = append(args, t)
+		}
+		if id, ok := cur["id"].(string); ok && id != "" {
+			q += ` AND run_id<?`
+			args = append(args, id)
+		}
+	}
+	q += ` ORDER BY COALESCE(started_at,ended_at) DESC, run_id DESC LIMIT ?`
+	args = append(args, o.Limit+1)
+	rows, err := queryMaps(ctx, r.db, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 func (r *Repository) ListResources(ctx context.Context, opts ListOptions) ([]map[string]any, error) {
@@ -88,9 +153,23 @@ func (r *Repository) ListEvents(ctx context.Context, opts ListOptions) ([]map[st
 		q += ` AND event_type=?`
 		args = append(args, o.EventType)
 	}
-	q += ` ORDER BY occurred_at DESC,sequence DESC LIMIT ?`
-	args = append(args, o.Limit)
-	return queryMaps(ctx, r.db, q, args...)
+	if cur := decodeCursor(o.Cursor); cur != nil {
+		if t, ok := cur["t"].(string); ok {
+			q += ` AND occurred_at<=?`
+			args = append(args, t)
+		}
+		if id, ok := cur["id"].(string); ok && id != "" {
+			q += ` AND event_id<?`
+			args = append(args, id)
+		}
+	}
+	q += ` ORDER BY occurred_at DESC, event_id DESC LIMIT ?`
+	args = append(args, o.Limit+1)
+	rows, err := queryMaps(ctx, r.db, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 func filters(q string, args []any, o ListOptions, timeColumn string, status bool) (string, []any) {

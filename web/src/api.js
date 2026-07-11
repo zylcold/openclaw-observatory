@@ -18,7 +18,7 @@ async function get(path, params) {
 export async function loadDashboard(filters) {
   const common = { from: filters.from, to: filters.to, instanceId: filters.instanceId, agentId: filters.agentId };
   const list = { ...common, limit: 200 };
-  const [status, timeseries, models, tools, agents, sessions, llmCalls, errors, subagents, mcpCalls] = await Promise.all([
+  const [status, timeseries, models, tools, agents, sessions, llmCalls, errors, subagents, mcpCalls, costTrends, costSummary] = await Promise.all([
     get("/status"),
     get("/timeseries", { ...common, bucket: filters.bucket }),
     get("/models/stats", common),
@@ -29,8 +29,10 @@ export async function loadDashboard(filters) {
     get("/errors/stats", common),
     get("/subagents", list),
     get("/mcp/calls", list),
+    get("/cost/trends", { ...common, period: "day" }),
+    get("/cost/summary", common),
   ]);
-  return { status, timeseries, models, tools, agents, sessions, llmCalls, errors, subagents, mcpCalls };
+  return { status, timeseries, models, tools, agents, sessions, llmCalls, errors, subagents, mcpCalls, costTrends, costSummary };
 }
 
 export const loadSession = (sessionId) => get(`/sessions/${encodeURIComponent(sessionId)}`);

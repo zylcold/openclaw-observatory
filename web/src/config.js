@@ -10,6 +10,7 @@ export const MODULES = [
   ["sessions", "会话瀑布图"],
   ["errors_cost", "错误聚合与成本"],
   ["activity", "Subagent / MCP 调用"],
+  ["cost_trends", "成本趋势与预算"],
 ];
 
 export const DEFAULT_CONFIG = {
@@ -17,7 +18,7 @@ export const DEFAULT_CONFIG = {
   theme: "dark",
   refreshInterval: 15000,
   modules: MODULES.map(([id]) => ({ id, visible: true })),
-  thresholds: { errorRateWarning: 5, errorRateCritical: 15, llmLatencyWarningMs: 5000, llmLatencyCriticalMs: 15000 },
+  thresholds: { errorRateWarning: 5, errorRateCritical: 15, llmLatencyWarningMs: 5000, llmLatencyCriticalMs: 15000, costBudgetUsd: 0 },
 };
 
 const KEY = "openclaw-observatory-dashboard-v3";

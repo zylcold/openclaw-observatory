@@ -108,7 +108,47 @@ daemon outage does not interrupt the run.
 
 ---
 
-## Phase 4 — Advanced Observability
+## Phase 4 — v0.4 Operational Hardening ✅
+
+### 4.1 Data Retention
+
+- ✅ Configurable retention policy (`--retention-events-days`, `--retention-samples-days`, `--retention-all-days`)
+- ✅ Background cleaner runs every 6 hours, purges old events/resource_samples
+- ✅ WAL mode + `PRAGMA synchronous=NORMAL` confirmed
+
+### 4.2 Frontend Incremental Updates
+
+- ✅ SSE-driven incremental chart updates (no full re-render/destroyCharts flicker)
+- ✅ `updateChartData`/`updateDoughnut`/`updateScatter` for in-place Chart.js updates
+- ✅ KPI cards and tables patched in-place via `updateNonChartDOM`
+
+### 4.3 CI/CD
+
+- ✅ GitHub Actions: Go test + vet with race detector, Vite build verification
+- ✅ Concurrency group cancellation for rapid iteration
+
+### 4.4 Cursor Pagination
+
+- ✅ Cursor-based pagination for sessions, runs, events endpoints
+- ✅ Opaque base64-encoded cursor using composite key (timestamp + id)
+- ✅ `LIMIT+1` fetch strategy for has-more detection
+
+### 4.5 URL State Sync
+
+- ✅ Time range, instance filter, agent filter, and session written to URL query params
+- ✅ Browser back/forward via popstate listener
+- ✅ Shareable dashboard URLs
+
+### 4.6 Cost Analysis Enhancement
+
+- ✅ `/api/v1/cost/trends` — daily/weekly/monthly cost breakdown by model
+- ✅ `/api/v1/cost/summary` — aggregate with day/week/month rolls
+- ✅ Budget alert UI with configurable `costBudgetUsd` threshold
+- ✅ Stacked bar chart for cost trends per model
+
+---
+
+## Phase 5 — Advanced Observability
 
 - Metadata-only session replay;
 - OpenTelemetry trace export and correlation;
