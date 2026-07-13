@@ -4,6 +4,11 @@ import { RANGE_KEYS } from "../state.js";
 import { getPricingTimestamp } from "../pricing.js";
 import { moduleHTML } from "./modules.js";
 
+function fmtLocal(iso) {
+  const d = new Date(iso);
+  return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
 export function shell({ config, data, filters, loading, error, settingsOpen, sessionDetail }) {
   const instances = data?.status?.instances || [];
   const agents = data?.agents || [];
@@ -25,7 +30,7 @@ export function shell({ config, data, filters, loading, error, settingsOpen, ses
     </nav>
     ${!compatible ? `<div class="banner">前后端版本不匹配：面板需要 API v3 / timeseries-v3。</div>` : ""}
     <main>
-      <div class="page-title"><div><h1>运行概览</h1><p>${filters.range.toUpperCase()}　${filters.instanceId ? '实例 ' + esc(filters.instanceId) + ' · ' : ''}${filters.agentId ? 'Agent ' + esc(filters.agentId) + ' · ' : ''}${filters.from.slice(0, 16).replace('T', ' ')} — ${filters.to.slice(0, 16).replace('T', ' ')}</p></div><button id="refresh">${loading ? "刷新中…" : "立即刷新"}</button></div>
+      <div class="page-title"><div><h1>运行概览</h1><p>${filters.range.toUpperCase()}　${filters.instanceId ? '实例 ' + esc(filters.instanceId) + ' · ' : ''}${filters.agentId ? 'Agent ' + esc(filters.agentId) + ' · ' : ''}${fmtLocal(filters.from)} — ${fmtLocal(filters.to)}</p></div><button id="refresh">${loading ? "刷新中…" : "立即刷新"}</button></div>
       ${error ? `<div class="banner error">${esc(error)}</div>` : ""}
       <section id="dashboard" class="dashboard ${loading && !data ? "loading" : ""}">${data ? visible.map((m) => moduleHTML(m.id, data, config, sessionDetail)).join("") : `<div class="skeleton">正在加载 v0.4 指标…</div>`}</section>
     </main>

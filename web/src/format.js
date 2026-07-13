@@ -10,4 +10,15 @@ export const bytes = (value) => {
   if (amount >= 1048576) return `${(amount / 1048576).toFixed(1)} MiB`;
   return `${num(amount)} B`;
 };
-export const shortTime = (value) => new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+const _hourFmt = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" });
+const _fullFmt = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+
+// Compact time label for chart axes and table cells.
+// When rangeMs is provided and ≤ 24h, only show HH:MM (no date prefix).
+let _currentRangeMs = Infinity;
+export function setShortTimeRange(rangeMs) { _currentRangeMs = rangeMs || Infinity; }
+export const shortTime = (value) => {
+  const d = new Date(value);
+  return _currentRangeMs <= 86400000 ? _hourFmt.format(d) : _fullFmt.format(d);
+};
+export const fullShortTime = (value) => _fullFmt.format(new Date(value));

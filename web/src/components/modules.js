@@ -1,5 +1,14 @@
 import { comboChart, doughnutChart, lineChart, palette, scatterChart, updateChartData, updateDoughnut, updateScatter, hasChart } from "../charts.js";
-import { bytes, compact, esc, money, ms, num, shortTime } from "../format.js";
+import { bytes, compact, esc, money, ms, num, shortTime, setShortTimeRange } from "../format.js";
+
+// Range constants for time-based formatting decisions
+const RANGE_MS = { "1h": 3600000, "6h": 21600000, "24h": 86400000, "7d": 604800000, "30d": 2592000000 };
+let _rangeMs = Infinity;
+
+export function setRange(rangeKey) {
+  _rangeMs = RANGE_MS[rangeKey] || Infinity;
+  setShortTimeRange(_rangeMs);
+}
 
 const names = {
   overview: "核心指标", resources: "资源趋势", llm_combo: "LLM 请求 · 延迟 · 错误率",

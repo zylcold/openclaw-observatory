@@ -36,7 +36,12 @@ function make(id, config) {
   const c = colors();
   const options = config.options || {};
   options.plugins = { legend: { labels: { color: c.text, boxWidth: 10, usePointStyle: true } }, tooltip: { intersect: false }, ...(options.plugins || {}) };
-  options.scales = Object.fromEntries(Object.entries(options.scales || {}).map(([key, scale]) => [key, { grid: { color: c.grid }, ticks: { color: c.text, maxTicksLimit: 8 }, ...scale }]));
+  options.scales = Object.fromEntries(Object.entries(options.scales || {}).map(([key, scale]) => {
+    const isX = key === "x";
+    const merged = { grid: { color: c.grid }, ticks: { color: c.text, maxTicksLimit: isX ? 10 : 8 }, ...scale };
+    if (merged.ticks) merged.ticks.maxTicksLimit = merged.ticks.maxTicksLimit || (isX ? 10 : 8);
+    return [key, merged];
+  }));
   active.set(id, new Chart(canvas, { ...config, options }));
 }
 

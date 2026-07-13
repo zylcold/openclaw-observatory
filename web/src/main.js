@@ -4,7 +4,7 @@ import { loadConfig, resetConfig, saveConfig } from "./config.js";
 import { destroyCharts, setChartAnimation } from "./charts.js";
 import { timeFilters } from "./state.js";
 import { fetchModelPricing } from "./pricing.js";
-import { paintCharts, updateCharts, updateNonChartDOM, updateAgentTable } from "./components/modules.js";
+import { paintCharts, updateCharts, updateNonChartDOM, updateAgentTable, setRange } from "./components/modules.js";
 import { shell } from "./components/shell.js";
 
 const app = document.getElementById("app");
@@ -107,6 +107,7 @@ function render({ preserveView = false, deferWhileInteracting = false } = {}) {
   const view = preserveView ? captureView() : null;
   destroyCharts();
   setChartAnimation(!preserveView && !hasRenderedData);
+  setRange(filters.range);
   document.documentElement.dataset.theme = config.theme;
   app.innerHTML = shell({ config, data, filters, loading, error, settingsOpen, sessionDetail });
   const interval = document.getElementById("refresh-interval");
