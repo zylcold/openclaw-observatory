@@ -210,6 +210,31 @@ export function patchDashboardCosts(data, pricing = getPricing()) {
     }
   }
 
+  // Patch 30d cost trends and compute Today / Week / Month
+  if (Array.isArray(data.costTrends30d)) {
+    for (const row of data.costTrends30d) {
+      const p = resolvePricing(row.provider, row.model, pricing);
+      if (p) {
+        const inputT = Number(row.inputTokens || 0);
+        const outputT = Number(row.outputTokens || 0);
+        row.costUsd = inputT * p.input + outputT * p.output;
+      }
+    }
+    // Aggregate by period (date string)
+    const byPeriod = {};
+    for (const row of data.costTrends30d) {
+      const period = row.period;
+      if (!byPeriod[period]) byPeriod[period] = 0;
+      byPeriod[period] += Number(row.costUsd || 0);
+    }
+    const periods = Object.keys(byPeriod).sort();
+    const todayStr = new Date().toISOString().slice(0, 10);
+    data.costSummary = data.costSummary || {};
+    data.costSummary.lastDayCost = byPeriod[todayStr] || 0;
+    data.costSummary.lastWeekCost = periods.slice(-7).reduce((sum, p) => sum + byPeriod[p], 0);
+    data.costSummary.lastMonthCost = periods.slice(-30).reduce((sum, p) => sum + byPeriod[p], 0);
+  }
+
   // Patch cost summary — recompute totals
   if (data.costSummary && Array.isArray(data.llmCalls)) {
     let total = 0;

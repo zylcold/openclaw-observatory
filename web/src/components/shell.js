@@ -25,7 +25,7 @@ export function shell({ config, data, filters, loading, error, settingsOpen, ses
     </nav>
     ${!compatible ? `<div class="banner">前后端版本不匹配：面板需要 API v3 / timeseries-v3。</div>` : ""}
     <main>
-      <div class="page-title"><div><h1>运行概览</h1><p>${filters.from.slice(0, 16).replace("T", " ")} — ${filters.to.slice(0, 16).replace("T", " ")} · ${filters.bucket} bucket</p></div><button id="refresh">${loading ? "刷新中…" : "立即刷新"}</button></div>
+      <div class="page-title"><div><h1>运行概览</h1><p>${[filters.range, filters.instanceId ? '实例: ' + esc(filters.instanceId) : '', filters.agentId ? 'Agent: ' + esc(filters.agentId) : ''].filter(Boolean).join(' · ')}　${filters.from.slice(0, 16).replace('T', ' ')} — ${filters.to.slice(0, 16).replace('T', ' ')}</p></div><button id="refresh">${loading ? "刷新中…" : "立即刷新"}</button></div>
       ${error ? `<div class="banner error">${esc(error)}</div>` : ""}
       <section id="dashboard" class="dashboard ${loading && !data ? "loading" : ""}">${data ? visible.map((m) => moduleHTML(m.id, data, config, sessionDetail)).join("") : `<div class="skeleton">正在加载 v0.4 指标…</div>`}</section>
     </main>

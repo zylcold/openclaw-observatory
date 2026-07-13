@@ -20,7 +20,11 @@ async function get(path, params) {
 export async function loadDashboard(filters) {
   const common = { from: filters.from, to: filters.to, instanceId: filters.instanceId, agentId: filters.agentId };
   const list = { ...common, limit: 200 };
-  const [status, timeseries, models, tools, agents, sessions, llmCalls, errors, subagents, mcpCalls, costTrends, costSummary] = await Promise.all([
+  // Always fetch 30d cost trends for Today/Week/Month KPIs (independent of dashboard filter)
+  const now = new Date();
+  const from30d = new Date(now.getTime() - 30 * 86400000).toISOString();
+  const costCommon30d = { from: from30d, to: now.toISOString(), instanceId: filters.instanceId, agentId: filters.agentId };
+  const [status, timeseries, models, tools, agents, sessions, llmCalls, errors, subagents, mcpCalls, costTrends, costSummary, costTrends30d] = await Promise.all([
     get("/status"),
     get("/timeseries", { ...common, bucket: filters.bucket }),
     get("/models/stats", common),
@@ -33,8 +37,9 @@ export async function loadDashboard(filters) {
     get("/mcp/calls", list),
     get("/cost/trends", { ...common, period: "day" }),
     get("/cost/summary", common),
+    get("/cost/trends", { ...costCommon30d, period: "day" }),
   ]);
-  const data = { status, timeseries, models, tools, agents, sessions, llmCalls, errors, subagents, mcpCalls, costTrends, costSummary };
+  const data = { status, timeseries, models, tools, agents, sessions, llmCalls, errors, subagents, mcpCalls, costTrends, costSummary, costTrends30d };
   // Patch costs using cached pricing data (computed from token counts)
   patchDashboardCosts(data, getPricing());
   return data;

@@ -43,20 +43,34 @@ function agentTable(data) {
 function heatmap(data) {
   const rows = data.timeseries?.agents || [];
   if (!rows.length) return empty();
-  const times = [...new Set(rows.map((r) => r.time))];
   const agents = [...new Set(rows.map((r) => r.agentId))];
-  const lookup = new Map(rows.map((r) => [r.agentId + "|" + r.time, Number(r.runs || 0)]));
+  // Always render exactly 24 columns by aggregating into even slots
+  const times = rows.map((r) => Date.parse(r.time)).filter(Number.isFinite);
+  if (!times.length) return empty();
+  const minTime = Math.min(...times);
+  const maxTime = Math.max(...times);
+  const span = (maxTime - minTime) || 1;
+  const slotWidth = span / 24;
+  const slotLabels = [];
+  for (let i = 0; i < 24; i++) slotLabels.push(new Date(minTime + (i + 0.5) * slotWidth).toISOString());
+  const lookup = new Map();
+  for (const r of rows) {
+    const t = Date.parse(r.time);
+    const slotIdx = Math.min(23, Math.max(0, Math.floor((t - minTime) / slotWidth)));
+    const key = r.agentId + "|" + slotIdx;
+    lookup.set(key, (lookup.get(key) || 0) + Number(r.runs || 0));
+  }
   const max = Math.max(1, ...lookup.values());
-  var html = "<div class=\"heatmap\" style=\"--columns:" + times.length + "\"><div></div>";
-  times.forEach((time, i) => {
-    html += "<span class=\"heat-label\">" + (i % Math.ceil(times.length / 8) === 0 ? esc(shortTime(time)) : "") + "</span>";
-  });
+  var html = "<div class=\"heatmap\" style=\"--columns:24\"><div></div>";
+  for (let i = 0; i < 24; i++) {
+    html += "<span class=\"heat-label\">" + (i % 4 === 0 ? esc(shortTime(slotLabels[i])) : "") + "</span>";
+  }
   agents.forEach((agent) => {
     html += "<b>" + esc(agent) + "</b>";
-    times.forEach((time) => {
-      const value = lookup.get(agent + "|" + time) || 0;
-      html += "<i title=\"" + esc(agent) + " · " + esc(shortTime(time)) + ": " + value + "\" style=\"--heat:" + (value / max) + "\"></i>";
-    });
+    for (let i = 0; i < 24; i++) {
+      const value = lookup.get(agent + "|" + i) || 0;
+      html += "<i title=\"" + esc(agent) + " · " + esc(shortTime(slotLabels[i])) + ": " + value + "\" style=\"--heat:" + (value / max) + "\"></i>";
+    }
   });
   html += "<div class=\"heat-legend\"><span>0</span><i></i><span>" + compact(max) + "</span></div>";
   html += "</div>";

@@ -27,6 +27,7 @@ let hasRenderedData = false;
 let lastRenderKey = ""; // track filter changes to force full re-render
 
 const INTERACTION_IDLE_MS = 600;
+const FILTER_KEY = "openclaw-observatory-filters-v1";
 
 function interactionActive() {
   return settingsOpen || pointerActive || dragActive || Boolean(openSelect?.isConnected) || Date.now() < interactionUntil;
@@ -256,17 +257,29 @@ function connectStream() {
 
 bindInteractionGuard();
 
-// --- URL state sync ---
+// --- URL & localStorage state sync ---
 function readURLState() {
   const params = new URLSearchParams(location.search);
   const range = params.get("range");
   const instanceId = params.get("instance") || "";
   const agentId = params.get("agent") || "";
-  if (range && ["1h", "6h", "24h", "7d", "30d"].includes(range)) {
-    filters = timeFilters(range, instanceId, agentId);
-  } else {
-    filters = timeFilters("24h", instanceId, agentId);
+  // URL params take priority; fall back to localStorage; finally default
+  let useRange = range;
+  let useInstance = instanceId;
+  let useAgent = agentId;
+  if (!useRange || !["1h", "6h", "24h", "7d", "30d"].includes(useRange)) {
+    try {
+      const saved = JSON.parse(localStorage.getItem(FILTER_KEY) || "{}");
+      if (saved.range && ["1h", "6h", "24h", "7d", "30d"].includes(saved.range)) useRange = saved.range;
+      if (!useInstance && saved.instanceId) useInstance = saved.instanceId;
+      if (!useAgent && saved.agentId) useAgent = saved.agentId;
+    } catch {}
   }
+  filters = timeFilters(useRange || "24h", useInstance, useAgent);
+}
+
+function saveFilters() {
+  localStorage.setItem(FILTER_KEY, JSON.stringify({ range: filters.range, instanceId: filters.instanceId, agentId: filters.agentId }));
 }
 
 function writeURLState() {
@@ -277,6 +290,7 @@ function writeURLState() {
   if (sessionDetail?.sessionId) params.set("session", sessionDetail.sessionId);
   const url = `${location.pathname}?${params}`;
   history.replaceState(null, "", url);
+  saveFilters();
 }
 
 // Listen for browser back/forward
