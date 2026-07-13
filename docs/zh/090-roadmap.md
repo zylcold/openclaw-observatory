@@ -75,7 +75,7 @@
 
 - ✅ `/timeseries` — 时间桶聚合（1m/5m/1h/1d）
 - ✅ 时间范围选择器（1h/6h/24h/7d/30d）驱动所有图表
-- ✅ 历史趋势图替换“最近 N 条”模式
+- ✅ 历史趋势图替换"最近 N 条"模式
 - ✅ 资源与各模型 Token 堆叠面积趋势
 
 ### 3.3 丰富图表类型
@@ -107,7 +107,153 @@
 
 ---
 
-## 阶段 4 — 高级可观测性
+## 阶段 4 — v0.4 运维加固 ✅
+
+### 4.1 数据保留
+
+- ✅ 可配置保留策略（`--retention-events-days`、`--retention-samples-days`、`--retention-all-days`）
+- ✅ 后台清理任务每 6 小时执行，清除过期事件/resource_samples
+- ✅ WAL 模式 + `PRAGMA synchronous=NORMAL` 已确认
+
+### 4.2 前端增量更新
+
+- ✅ SSE 驱动的增量图表更新（无全量 re-render/destroyCharts 闪烁）
+- ✅ `updateChartData`/`updateDoughnut`/`updateScatter` 原地更新 Chart.js
+- ✅ KPI 卡片和表格通过 `updateNonChartDOM` 原地补丁
+
+### 4.3 CI/CD
+
+- ✅ GitHub Actions：Go test + vet（含 race detector）、Vite build 验证
+- ✅ Concurrency group 取消机制，支持快速迭代
+
+### 4.4 游标分页
+
+- ✅ sessions、runs、events 端点支持游标分页
+- ✅ 不透明 base64 编码游标，使用复合键（时间戳 + ID）
+- ✅ `LIMIT+1` 策略检测是否有更多数据
+
+### 4.5 URL 状态同步
+
+- ✅ 时间范围、实例过滤、Agent 过滤、会话 ID 写入 URL 查询参数
+- ✅ 浏览器前进/后退通过 popstate 监听
+- ✅ 可分享的 Dashboard URL
+
+### 4.6 成本分析增强
+
+- ✅ `/api/v1/cost/trends` — 按日/周/月维度拆分各模型成本
+- ✅ `/api/v1/cost/summary` — 聚合成本，含 day/week/month 滚动
+- ✅ 预算告警 UI，可配置 `costBudgetUsd` 阈值
+- ✅ 成本趋势堆叠柱状图（按模型）
+
+---
+
+## 阶段 5 — v0.5 稳定性与韧性 🚧
+
+> 重点：防止 daemon/plugin 重启期间的数据丢失，从网络中断中优雅恢复，
+> 针对边缘场景崩溃进行加固。
+
+### 5.1 Plugin → Daemon 断线重连
+
+**现状缺陷：**
+- Forwarder 通过 Unix socket 连接 daemon，flush 失败后用指数退避重试（250ms → 5s），但没有连接健康检查——退避后直接盲目 POST
+- `post()` 超时硬编码为 250ms（force）和 1500ms，daemon 高负载时可能误判失败
+- daemon 崩溃期间队列满后直接丢事件（`queue_full`），critical 事件（`gateway.started/stopped`、`session.completed`）也可能被丢弃
+
+**改进计划：**
+- [ ] flush 前探测 socket 连通性（`fs.access` 或 `connect` 检查），避免无意义 POST
+- [ ] 指数退避上限提高到 30s 并加入抖动（jitter），daemon 恢复后快速回连
+- [ ] critical 事件保护：队列满时优先丢弃最低优先级事件，确保 `gateway.started/stopped`、`session.completed` 等关键事件不丢失
+- [ ] 队列深度通过 heartbeat 事件上报 daemon，daemon 根据 `queueDepth` 记录 backpressure 告警日志
+- [ ] 添加 `--queue-capacity` 命令行参数，允许调大队列上限
+
+### 5.2 Daemon 崩溃防护与恢复
+
+**现状缺陷：**
+- daemon 崩溃后依赖 LaunchAgent 重启，但没有崩溃诊断和自愈机制
+- SQLite WAL 模式虽然安全，但异常退出可能留下 stale `-wal`/`-shm` 旁车文件
+- `main.go` 中 `errCh` 收到 HTTP server 错误后直接退出，没有尝试 recovery
+- 资源采样中 `ps`/`lsof` 子进程失败（如权限问题）被静默忽略，无法区分是 daemon 问题还是 OS 问题
+
+**改进计划：**
+- [ ] 启动时检测并清理 SQLite stale lock 文件（`.db-wal`、`.db-shm`）
+- [ ] HTTP server 致命错误恢复：瞬态错误自动重试（bind 冲突除外）
+- [ ] SIGBUS / SIGSEGV handler：写入 crash dump 到 `logs/`，包含 goroutine 堆栈
+- [ ] 健康检查增强：`/ready` 端点验证 SQLite 可写性和最近事件延迟
+- [ ] 进程采样错误追踪：连续失败计数器，超过 N 次后标记 `gateway.crashed`
+
+### 5.3 数据写入健壮性
+
+**现状缺陷：**
+- `InsertEvents` 在单个事务中执行 insert + reduce，大批量时事务持有锁时间过长
+- `PRAGMA busy_timeout=5000` 仅 5s，并发查询可能触发 SQLITE_BUSY
+- `SetMaxOpenConns(1)` 是 SQLite 单写模式的必要设置，但缺少连接池健康检查
+- retention 清理在事务内逐行 DELETE，大批量时性能差
+- 没有写入审计
+
+**改进计划：**
+- [ ] `busy_timeout` 提高到 30s，适应长查询场景
+- [ ] 批量写入拆分：单次 batch 超过 50 个事件时拆分为多个小事务（减少锁持有时间）
+- [ ] Retention DELETE 改用分批删除（`WHERE rowid IN (SELECT rowid FROM ... LIMIT 1000)`），避免全表扫描
+- [ ] 定期 VACUUM（retention job 完成后触发，低峰期节流执行）
+- [ ] 写入性能指标：暴露 `INSERT OR IGNORE` 耗时、reduce 耗时、事务提交耗时到 `/metrics`
+- [ ] 可选写入审计日志（`--audit-log` flag），记录每批的 accepted/duplicates/errors
+
+### 5.4 前端断线重连与错误恢复
+
+**现状缺陷：**
+- SSE `onerror` 简单关闭 + 5s 后重连，没有区分网络错误、服务端 503、正常关闭
+- `loadDashboard` 使用裸 `fetch()`，没有超时、重试、AbortController
+- daemon 不可用时页面显示空白或错误信息，没有友好的离线状态
+- 背景自动刷新失败后没有退避策略，一直按固定间隔重试
+
+**改进计划：**
+- [ ] SSE 重连加入指数退避（1s → 2s → 4s → … → 30s），连接成功后重置
+- [ ] SSE `onerror` 区分 `readyState`：CLOSED = 重连，CONNECTING = 等待
+- [ ] `fetch()` 加入 AbortController + 10s 超时，超时后重试一次
+- [ ] 离线横幅：daemon 不可达时显示"正在重连…"状态条，恢复后自动消失
+- [ ] 背景刷新退避：连续失败 3 次后间隔翻倍，上限 60s
+- [ ] 监听 `navigator.onLine`：离线时暂停刷新，上线后立即触发一次
+- [ ] 数据缓存：fetch 失败时继续展示上一次成功的 dashboard 数据（标注"数据可能已过期"）
+
+### 5.5 性能优化
+
+**现状缺陷：**
+- `/agents/stats` 使用 3 个 CTE + 多个 JOIN，30d 范围大数据量时可能较慢
+- `/timeseries` 对每个桶做 `strftime` 聚合，上限 2000 个桶意味着最多 2000 次 `strftime` 调用
+- `agentStats` 查询中的 `tool_events` CTE 是无过滤条件的 UNION ALL，有全表扫描风险
+- 资源采样每 5s 调用 `ps` + `lsof` 两个子进程，macOS 上 `lsof` 较慢
+- 前端一次 dashboard 加载发送 12 个并行 fetch 请求
+
+**改进计划：**
+- [ ] `timeseries` 查询优化：预计算桶边界，用 `CASE WHEN` 替代 `strftime`
+- [ ] `agent_stats`：将时间范围过滤下推到 CTE 内部，减少 JOIN 中间行数
+- [ ] 替换 `lsof` 为更快的 FD 统计方式（macOS：`proc_info` syscall；Linux：`/proc/<pid>/fd` readdir）
+- [ ] 为长查询添加 statement timeout（SQLite `busy_timeout` 不覆盖此场景）
+- [ ] 前端：合并部分 API 为 composite `/api/v1/dashboard` 端点（单次请求返回 KPI + 图表数据）
+- [ ] SQLite 查询计划分析：对关键查询运行 `EXPLAIN QUERY PLAN` 建立基线
+
+### 5.6 监控与告警
+
+**现状缺陷：**
+- `/metrics` 暴露 Prometheus 格式但无内置告警规则
+- 缺少 daemon 自身健康指标（事件延迟、队列积压、查询延迟）
+- 日志仅 `slog` 输出到 stderr，无结构化日志文件轮转
+
+**改进计划：**
+- [ ] 新增 Prometheus 指标：`openclaw_monitor_insert_duration_seconds`、`openclaw_monitor_queue_depth`、`openclaw_monitor_query_duration_seconds`
+- [ ] 日志轮转：`slog` 输出写入 `logs/observatoryd.log`，按天轮转，保留 7 天
+- [ ] 内置告警阈值：事件队列 > 80% 容量 → WARN，写入延迟 > 1s → WARN
+- [ ] `status` API 返回 `eventQueueDepth`、`lastEventReceivedAt`、`dbSizeBytes`
+
+**退出条件：**
+- daemon 崩溃重启后 critical 事件零丢失
+- 前端断网恢复后 5s 内自动重连并展示数据
+- 30d 范围 `agents/stats` 查询 < 500ms
+- 数据库写入指标暴露到 `/metrics`
+
+---
+
+## 阶段 6 — 高级可观测性
 
 - 仅元数据的会话回放；
 - OpenTelemetry 追踪导出和关联；
