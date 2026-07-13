@@ -159,6 +159,8 @@ async function refresh({ keepRange = false, automatic = false, forceRender = fal
   } finally {
     loading = false;
     document.documentElement.classList.remove("refreshing");
+    const btn = document.getElementById("refresh");
+    if (btn) btn.textContent = "刷新";
     // For background refreshes with no filter changes, try incremental update first.
     // When filters changed (range/instance/agent), force full re-render so all panels update.
     if (background && !error && hasRenderedData && !filtersChanged) {
