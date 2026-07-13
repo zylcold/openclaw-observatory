@@ -3,7 +3,8 @@ import { bytes, compact, esc, money, ms, num, shortTime } from "../format.js";
 
 const names = {
   overview: "核心指标", resources: "资源趋势", llm_combo: "LLM 请求 · 延迟 · 错误率",
-  model_tokens: "各模型 Token 趋势", shares: "Token / 工具占比", scatter: "LLM 延迟－Token 散点",
+  model_tokens: "各模型 Token 趋势", token_share: "Token 模型占比", tool_share: "工具调用占比",
+  scatter: "LLM 延迟－Token 散点",
   agent_compare: "Agent 对比", heatmap: "时间 × Agent 活跃度", sessions: "会话瀑布图",
   errors_cost: "错误聚合与成本", activity: "Subagent / MCP 调用",
   cost_trends: "成本趋势与预算",
@@ -43,38 +44,57 @@ function agentTable(data) {
 function heatmap(data) {
   const rows = data.timeseries?.agents || [];
   if (!rows.length) return empty();
+  var times = [...new Set(rows.map((r) => r.time))];
   const agents = [...new Set(rows.map((r) => r.agentId))];
-  // Always render exactly 24 columns by aggregating into even slots
-  const times = rows.map((r) => Date.parse(r.time)).filter(Number.isFinite);
-  if (!times.length) return empty();
-  const minTime = Math.min(...times);
-  const maxTime = Math.max(...times);
-  const span = (maxTime - minTime) || 1;
-  const slotWidth = span / 24;
-  const slotLabels = [];
-  for (let i = 0; i < 24; i++) slotLabels.push(new Date(minTime + (i + 0.5) * slotWidth).toISOString());
-  const lookup = new Map();
-  for (const r of rows) {
-    const t = Date.parse(r.time);
-    const slotIdx = Math.min(23, Math.max(0, Math.floor((t - minTime) / slotWidth)));
-    const key = r.agentId + "|" + slotIdx;
-    lookup.set(key, (lookup.get(key) || 0) + Number(r.runs || 0));
-  }
-  const max = Math.max(1, ...lookup.values());
-  var html = "<div class=\"heatmap\" style=\"--columns:24\"><div></div>";
-  for (let i = 0; i < 24; i++) {
-    html += "<span class=\"heat-label\">" + (i % 4 === 0 ? esc(shortTime(slotLabels[i])) : "") + "</span>";
-  }
-  agents.forEach((agent) => {
-    html += "<b>" + esc(agent) + "</b>";
-    for (let i = 0; i < 24; i++) {
-      const value = lookup.get(agent + "|" + i) || 0;
-      html += "<i title=\"" + esc(agent) + " · " + esc(shortTime(slotLabels[i])) + ": " + value + "\" style=\"--heat:" + (value / max) + "\"></i>";
+  var lookup = new Map(rows.map((r) => [r.agentId + "|" + r.time, Number(r.runs || 0)]));
+  // Cap at 24 columns — aggregate if more time slots than 24
+  if (times.length > 24) {
+    const minTime = Math.min(...times.map((t) => Date.parse(t)));
+    const maxTime = Math.max(...times.map((t) => Date.parse(t)));
+    const span = (maxTime - minTime) || 1;
+    const slotWidth = span / 24;
+    const slotLabels = [];
+    for (let i = 0; i < 24; i++) slotLabels.push(new Date(minTime + (i + 0.5) * slotWidth).toISOString());
+    lookup = new Map();
+    for (const r of rows) {
+      const t = Date.parse(r.time);
+      const slotIdx = Math.min(23, Math.max(0, Math.floor((t - minTime) / slotWidth)));
+      const key = r.agentId + "|" + slotIdx;
+      lookup.set(key, (lookup.get(key) || 0) + Number(r.runs || 0));
     }
+    times = slotLabels;
+    const max = Math.max(1, ...lookup.values());
+    var html = "<div class=\"heatmap\" style=\"--columns:24\"><div></div>";
+    for (let i = 0; i < 24; i++) {
+      html += "<span class=\"heat-label\">" + (i % 4 === 0 ? esc(shortTime(times[i])) : "") + "</span>";
+    }
+    agents.forEach((agent) => {
+      html += "<b>" + esc(agent) + "</b>";
+      for (let i = 0; i < 24; i++) {
+        const value = lookup.get(agent + "|" + i) || 0;
+        html += "<i title=\"" + esc(agent) + " · " + esc(shortTime(times[i])) + ": " + value + "\" style=\"--heat:" + (value / max) + "\"></i>";
+      }
+    });
+    html += "<div class=\"heat-legend\"><span>0</span><i></i><span>" + compact(max) + "</span></div>";
+    html += "</div>";
+    return html;
+  }
+  // Original path: render all time slots as-is (≤24)
+  const max = Math.max(1, ...lookup.values());
+  var html2 = "<div class=\"heatmap\" style=\"--columns:" + times.length + "\"><div></div>";
+  times.forEach((time, i) => {
+    html2 += "<span class=\"heat-label\">" + (i % Math.ceil(times.length / 8) === 0 ? esc(shortTime(time)) : "") + "</span>";
   });
-  html += "<div class=\"heat-legend\"><span>0</span><i></i><span>" + compact(max) + "</span></div>";
-  html += "</div>";
-  return html;
+  agents.forEach((agent) => {
+    html2 += "<b>" + esc(agent) + "</b>";
+    times.forEach((time) => {
+      const value = lookup.get(agent + "|" + time) || 0;
+      html2 += "<i title=\"" + esc(agent) + " · " + esc(shortTime(time)) + ": " + value + "\" style=\"--heat:" + (value / max) + "\"></i>";
+    });
+  });
+  html2 += "<div class=\"heat-legend\"><span>0</span><i></i><span>" + compact(max) + "</span></div>";
+  html2 += "</div>";
+  return html2;
 }
 
 function waterfall(detail) {
@@ -185,7 +205,8 @@ export function moduleHTML(id, data, config, sessionDetail) {
   if (id === "resources") body = chart("resources-chart");
   if (id === "llm_combo") body = chart("llm-combo-chart");
   if (id === "model_tokens") body = chart("model-token-chart", true);
-  if (id === "shares") body = "<div class=\"split charts\"><section><h3>Token by Model</h3>" + chart("token-share-chart") + "</section><section><h3>Tool Calls · Top 7 + Full Ranking</h3>" + chart("tool-share-chart") + "<div class=\"tool-ranking-wrap\">" + toolRanking(data.tools) + "</div></section></div>";
+  if (id === "token_share") body = chart("token-share-chart");
+  if (id === "tool_share") body = chart("tool-share-chart") + "<div class=\"tool-ranking-wrap\">" + toolRanking(data.tools) + "</div>";
   if (id === "scatter") body = chart("scatter-chart");
   if (id === "agent_compare") body = chart("agent-chart") + agentTable(data);
   if (id === "heatmap") body = heatmap(data);
@@ -341,6 +362,20 @@ export function updateNonChartDOM(appEl, data, config) {
   var errorRate = runs ? 100 * errors / runs : 0;
   var latency = sum("llmRequests") ? agents.reduce((v, row) => v + Number(row.llmDurationMs || 0), 0) / sum("llmRequests") : 0;
   var disk = [...(data?.timeseries?.points || [])].reverse().find((point) => Number(point.diskTotalBytes || 0) > 0) || {};
+
+  // Update page title time range
+  var titleEl = appEl.querySelector(".page-title p");
+  if (titleEl) {
+    // Read current filters from the active buttons/selects
+    var activeRange = appEl.querySelector(".ranges button.active");
+    var rangeText = activeRange ? activeRange.dataset.range : "";
+    var instSel = appEl.querySelector("#instance-filter");
+    var agentSel = appEl.querySelector("#agent-filter");
+    var parts = [rangeText];
+    if (instSel && instSel.value) parts.push("实例: " + instSel.value);
+    if (agentSel && agentSel.value) parts.push("Agent: " + agentSel.value);
+    // We don't have filters.from/to here, so keep title text as-is for incremental updates
+  }
 
   var kpiValues = [
     compact(runs),
