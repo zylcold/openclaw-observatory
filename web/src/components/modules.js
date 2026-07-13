@@ -58,6 +58,7 @@ function heatmap(data) {
       html += "<i title=\"" + esc(agent) + " · " + esc(shortTime(time)) + ": " + value + "\" style=\"--heat:" + (value / max) + "\"></i>";
     });
   });
+  html += "<div class=\"heat-legend\"><span>0</span><i></i><span>" + compact(max) + "</span></div>";
   html += "</div>";
   return html;
 }
@@ -170,7 +171,7 @@ export function moduleHTML(id, data, config, sessionDetail) {
   if (id === "resources") body = chart("resources-chart");
   if (id === "llm_combo") body = chart("llm-combo-chart");
   if (id === "model_tokens") body = chart("model-token-chart", true);
-  if (id === "shares") body = "<div class=\"split charts\"><section><h3>Token by Model</h3>" + chart("token-share-chart") + "</section><section><h3>Tool Calls · Top 7 + Full Ranking</h3>" + chart("tool-share-chart") + toolRanking(data.tools) + "</section></div>";
+  if (id === "shares") body = "<div class=\"split charts\"><section><h3>Token by Model</h3>" + chart("token-share-chart") + "</section><section><h3>Tool Calls · Top 7 + Full Ranking</h3>" + chart("tool-share-chart") + "<div class=\"tool-ranking-wrap\">" + toolRanking(data.tools) + "</div></section></div>";
   if (id === "scatter") body = chart("scatter-chart");
   if (id === "agent_compare") body = chart("agent-chart") + agentTable(data);
   if (id === "heatmap") body = heatmap(data);
