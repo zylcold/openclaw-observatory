@@ -272,21 +272,13 @@ as the same user can generally read that user's files and socket.
 
 ## Roadmap
 
-- **Phase 0 — Architecture and Contracts** ✅ — Runtime model, event schema,
-  metrics and API contracts.
-- **Phase 1 — Local MVP** ✅ — Plugin, Go daemon, SQLite, metrics, process
-  samples, and baseline dashboards.
-- **Phase 2 — Product Dashboard** ✅ — Rich timeline, session waterfall,
-  resource charts, error explorer, and configuration UI.
-- **Phase 3 — Observability Enhancement** ✅ — Per-agent stats, time-series
-  aggregation, heatmap, scatter, doughnut charts, and dashboard JSON config.
-- **Phase 4 — Operational Hardening** ✅ — Data retention, SSE incremental
-  updates, CI/CD, cursor pagination, URL state sync, and cost analysis.
-- **Phase 5 — Advanced Observability** — Metadata replay, OpenTelemetry traces,
-  Loki/Tempo integration, remote mode, and multi-instance operations.
-
-Full replay of prompt/tool content is not implied by Phase 5. Any content mode
-must be separately opt-in, bounded, redacted, encrypted, and documented.
+- **Phase 0 — Architecture and Contracts** ✅
+- **Phase 1 — Local MVP** ✅
+- **Phase 2 — Product Dashboard** ✅
+- **Phase 3 — Observability Enhancement** ✅
+- **Phase 4 — Operational Hardening** ✅
+- **Phase 5 — Stability & Resilience** 🚧 — Plugin-daemon reconnection, crash prevention, data write hardening, frontend offline recovery, performance optimization, monitoring.
+- **Phase 6 — Advanced Observability** — Metadata replay, OpenTelemetry, remote mode, multi-instance.
 
 ## License
 
