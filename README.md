@@ -16,30 +16,96 @@ exporters. Its focus is high-cardinality local detail—sessions, runs, model
 calls, tool calls, and resource history—which must not be stored in Prometheus
 labels.
 
+![Dashboard Overview](docs/screenshots/dashboard-overview.png)
+
 ## Status
 
-**Local MVP.** The repository contains:
+**v0.4 — Operational Hardening.** The repository contains:
 
 - a versioned event contract and JSON Schema;
 - an OpenClaw plugin for OpenClaw `2026.6.11+`;
-- a Go daemon with SQLite, resource sampling, REST, SSE, and Prometheus output;
-- a small built-in dashboard;
+- a Go daemon (v0.4) with SQLite, resource sampling, REST, SSE, and Prometheus output;
+- a rich dashboard with 12 chart modules, real-time SSE updates, and PWA support;
+- configurable data retention with background cleanup;
+- cursor-based pagination for all list endpoints;
+- URL state sync for shareable dashboard links;
+- cost trend analysis with budget alerts and OpenRouter pricing integration;
 - Prometheus/Grafana provisioning and initial alert rules.
 
-The current adapter is verified against OpenClaw `2026.6.11` on macOS. OpenClaw
-SDK compatibility outside that version range is detected at plugin load time but
-has not yet been exhaustively tested. Linux process sampling is an architectural
-extension point, not part of this macOS-first MVP.
+The current adapter is verified against OpenClaw `2026.6.11` on macOS. Linux
+process sampling is an architectural extension point, not part of this
+macOS-first MVP.
 
-## Goals
+## Features
 
-- Observe Gateway, Session, Agent Run, LLM, Tool, MCP, and Subagent lifecycles.
-- Correlate semantic activity with host process CPU and memory.
-- Keep detailed identifiers in SQLite and only bounded dimensions in metrics.
-- Remain operational when OpenClaw or the Observatory daemon is unavailable.
-- Capture no prompt, tool argument, tool output, shell command, or file content
-  by default.
-- Provide stable, versioned contracts that can survive OpenClaw SDK changes.
+### Dashboard
+
+The built-in dashboard provides 12 configurable modules with drag-and-drop
+ordering, dark/light themes, and localStorage persistence:
+
+![KPI Cards & Charts](docs/screenshots/dashboard-charts.png)
+
+- **Core KPI cards** — Agent runs, LLM requests, token usage, tool calls,
+  average latency, cost, and disk usage with threshold-based highlighting.
+- **Resource trends** — CPU %, memory RSS, disk usage, and thread/FD counts
+  over time.
+- **LLM combo chart** — Request volume, average latency, and error rate in a
+  single multi-axis view.
+- **Per-model token trends** — Stacked area chart showing token consumption
+  across different LLM models.
+- **Token / Tool distribution** — Doughnut charts for quick share comparison.
+- **LLM latency–token scatter** — Correlate response time with token counts
+  per model.
+
+![Agent Heatmap & Comparison](docs/screenshots/dashboard-heatmap.png)
+
+- **Agent comparison table** — Runs, tokens, tools, duration, error rate, and
+  cost per agent.
+- **Time × Agent activity heatmap** — Visualize when each agent is most active.
+- **Session waterfall** — Detailed LLM, Tool, MCP, and Subagent timeline for
+  each session.
+
+![Sessions & Errors](docs/screenshots/dashboard-sessions.png)
+
+- **Error aggregation** — Grouped by source and category with last-occurred
+  timestamps.
+- **Model cost breakdown** — Per-model requests, tokens, and reported cost.
+- **Subagent / MCP activity** — Dedicated views for nested agent and MCP calls.
+
+![Cost Trends](docs/screenshots/dashboard-cost.png)
+
+- **Cost trend analysis** — Daily, weekly, and monthly cost breakdown by model
+  with stacked bar charts.
+- **Budget alerts** — Configurable cost threshold with visual warning when
+  spending approaches the limit.
+- **OpenRouter pricing** — Auto-fetch model pricing for accurate cost estimates.
+
+### Settings & Configuration
+
+![Settings Drawer](docs/screenshots/dashboard-settings.png)
+
+- Toggle module visibility and reorder via drag-and-drop.
+- Configurable auto-refresh interval (5s / 15s / 30s / 60s / off).
+- Adjustable threshold values for error rate and latency warnings.
+- JSON-based configuration with import/export.
+- One-click pricing refresh from OpenRouter.
+
+### Platform Features
+
+- **PWA support** — Installable on mobile/desktop with offline manifest and
+  service worker.
+- **Mobile responsive** — Adaptive layout with safe-area insets for notch
+  devices. Pinch-zoom disabled for app-like feel.
+- **SSE incremental updates** — Charts update in-place without full re-render,
+  eliminating flicker.
+- **URL state sync** — Time range, filters, and selected session are encoded in
+  the URL for easy sharing.
+- **Cursor pagination** — Efficient pagination across all list endpoints using
+  opaque base64 cursors.
+- **Data retention** — Configurable retention periods for events, resource
+  samples, and all data with background cleanup every 6 hours.
+- **Cloudflare Tunnel ready** — Deploy securely behind Cloudflare Access
+  without exposing ports.
 
 ## Architecture
 
@@ -126,8 +192,8 @@ services; the database is preserved unless explicitly deleted.
 
 Once the plugin is enabled, OpenClaw also discovers the `openclaw-observatory`
 Skill and read-only `observatory_query` Tool. Agents can answer requests such as
-“check whether OpenClaw is healthy,” “show recent failed Tool calls,” or
-“explain the memory trend” through the localhost service without direct SQLite
+"check whether OpenClaw is healthy," "show recent failed Tool calls," or
+"explain the memory trend" through the localhost service without direct SQLite
 access. The Tool is fixed to `127.0.0.1:10086`, uses GET requests only, caps
 query size, and cannot restart services or modify data.
 
@@ -144,9 +210,8 @@ docker compose -f deploy/docker-compose.yml up -d
 Docker Desktop scrapes `host.docker.internal:10086`. The daemon binds only to
 `127.0.0.1` by default, so container scraping is intentionally opt-in: start it
 by binding `observatory-web --listen 0.0.0.0:10086` only behind a trusted host
-firewall, or run Prometheus
-directly on the host. The REST API contains local operational identifiers and
-must not be exposed to an untrusted network.
+firewall, or run Prometheus directly on the host. The REST API contains local
+operational identifiers and must not be exposed to an untrusted network.
 
 ## API summary
 
@@ -165,12 +230,14 @@ must not be exposed to an untrusted network.
 | `GET /api/v1/resources` | Resource samples |
 | `GET /api/v1/tools/stats` | Aggregated tool statistics |
 | `GET /api/v1/models/stats` | Aggregated model statistics |
-| `GET /api/v1/events` | Filtered raw metadata events |
+| `GET /api/v1/cost/trends` | Daily/weekly/monthly cost breakdown by model |
+| `GET /api/v1/cost/summary` | Aggregate cost with day/week/month rolls |
+| `GET /api/v1/events` | Filtered raw metadata events (cursor pagination) |
 | `GET /api/v1/stream` | One-way SSE event stream |
 
 All collection and query timestamps are UTC RFC3339. List endpoints accept
-`limit`, `cursor`, `from`, `to`, `instanceId`, and `agentId` where applicable. See
-[`docs/070-api-design.md`](docs/070-api-design.md).
+`limit`, `cursor`, `from`, `to`, `instanceId`, and `agentId` where applicable.
+See [`docs/070-api-design.md`](docs/070-api-design.md).
 
 ## Privacy and security
 
@@ -205,16 +272,20 @@ as the same user can generally read that user's files and socket.
 
 ## Roadmap
 
-- **Phase 0 — Architecture and Contracts:** runtime model, event schema, metrics
-  and API contracts. Implemented.
-- **Phase 1 — Local MVP:** plugin, Go daemon, SQLite, metrics, process samples,
-  and baseline dashboards. Implemented for macOS; hardening continues.
-- **Phase 2 — Product Dashboard:** richer timeline, session detail, resource
-  charts, and error explorer.
-- **Phase 3 — Advanced Observability:** metadata replay, OpenTelemetry traces,
+- **Phase 0 — Architecture and Contracts** ✅ — Runtime model, event schema,
+  metrics and API contracts.
+- **Phase 1 — Local MVP** ✅ — Plugin, Go daemon, SQLite, metrics, process
+  samples, and baseline dashboards.
+- **Phase 2 — Product Dashboard** ✅ — Rich timeline, session waterfall,
+  resource charts, error explorer, and configuration UI.
+- **Phase 3 — Observability Enhancement** ✅ — Per-agent stats, time-series
+  aggregation, heatmap, scatter, doughnut charts, and dashboard JSON config.
+- **Phase 4 — Operational Hardening** ✅ — Data retention, SSE incremental
+  updates, CI/CD, cursor pagination, URL state sync, and cost analysis.
+- **Phase 5 — Advanced Observability** — Metadata replay, OpenTelemetry traces,
   Loki/Tempo integration, remote mode, and multi-instance operations.
 
-Full replay of prompt/tool content is not implied by Phase 3. Any content mode
+Full replay of prompt/tool content is not implied by Phase 5. Any content mode
 must be separately opt-in, bounded, redacted, encrypted, and documented.
 
 ## License
