@@ -204,15 +204,22 @@ func (s *Server) readyHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, response)
 }
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
-	v, err := s.repo.Status(r.Context())
+	v, err := s.statusData(r.Context())
 	if err != nil {
 		apiError(w, 500, "storage_error", "failed to query status")
 		return
 	}
-	schemaVersion, err := s.repo.SchemaVersion(r.Context())
+	data(w, v)
+}
+
+func (s *Server) statusData(ctx context.Context) (map[string]any, error) {
+	v, err := s.repo.Status(ctx)
 	if err != nil {
-		apiError(w, 500, "storage_error", "failed to query schema version")
-		return
+		return nil, err
+	}
+	schemaVersion, err := s.repo.SchemaVersion(ctx)
+	if err != nil {
+		return nil, err
 	}
 	v["apiVersion"] = APIVersion
 	v["schemaVersion"] = schemaVersion
@@ -220,7 +227,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	v["buildId"] = BuildID
 	v["daemon"] = map[string]any{"version": Version, "ready": s.ready.Load(), "buildId": BuildID}
 	v["time"] = time.Now().UTC()
-	data(w, v)
+	return v, nil
 }
 
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -235,7 +242,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusBadRequest, "invalid_query", err.Error())
 		return
 	}
-	status, err := s.repo.Status(r.Context())
+	status, err := s.statusData(r.Context())
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query status")
 		return

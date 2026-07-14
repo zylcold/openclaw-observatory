@@ -137,6 +137,23 @@ func TestV3AnalyticsRoutes(t *testing.T) {
 	}
 
 	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/dashboard?from=2026-07-10T00:00:00Z&to=2026-07-11T00:00:00Z&bucket=1h", nil))
+	var dashboard struct {
+		Data struct {
+			Status struct {
+				APIVersion   int      `json:"apiVersion"`
+				Capabilities []string `json:"capabilities"`
+			} `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &dashboard); err != nil {
+		t.Fatal(err)
+	}
+	if dashboard.Data.Status.APIVersion != APIVersion || len(dashboard.Data.Status.Capabilities) == 0 {
+		t.Fatalf("dashboard status lacks compatibility metadata: %#v", dashboard.Data.Status)
+	}
+
+	res = httptest.NewRecorder()
 	handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/timeseries?bucket=2m", nil))
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("invalid bucket returned %d: %s", res.Code, res.Body.String())
