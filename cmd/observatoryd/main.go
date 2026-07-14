@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -53,7 +54,15 @@ func run() error {
 	if err := os.Chmod(*dataDir, 0o700); err != nil {
 		return err
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logWriter, logOutput, err := newLogger(*dataDir)
+	if err != nil {
+		return err
+	}
+	defer logWriter.Close()
+	logger := slog.New(slog.NewTextHandler(logOutput, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if err := configureCrashOutput(filepath.Join(*dataDir, "logs")); err != nil {
+		logger.Warn("configure crash output", "error", err)
+	}
 	repo, err := storage.Open(*dbPath)
 	if err != nil {
 		return err
@@ -111,6 +120,18 @@ func run() error {
 	_ = ingestHTTP.Shutdown(shutdownCtx)
 	_ = publicHTTP.Shutdown(shutdownCtx)
 	return nil
+}
+
+func configureCrashOutput(logDir string) error {
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(filepath.Join(logDir, "observatoryd-crash.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	return debug.SetCrashOutput(file, debug.CrashOptions{})
 }
 
 func listenUnix(path string) (net.Listener, error) {

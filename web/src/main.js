@@ -25,6 +25,11 @@ let openSelect = null;
 let deferredRender = false;
 let hasRenderedData = false;
 let lastRenderKey = ""; // track filter changes to force full re-render
+let connectionLost = navigator.onLine === false;
+let dataStale = false;
+let refreshFailures = 0;
+let streamBackoffMs = 1000;
+let streamReconnectTimer = null;
 
 const INTERACTION_IDLE_MS = 600;
 const FILTER_KEY = "openclaw-observatory-filters-v1";
@@ -109,7 +114,7 @@ function render({ preserveView = false, deferWhileInteracting = false } = {}) {
   setChartAnimation(!preserveView && !hasRenderedData);
   setRange(filters.range);
   document.documentElement.dataset.theme = config.theme;
-  app.innerHTML = shell({ config, data, filters, loading, error, settingsOpen, sessionDetail });
+  app.innerHTML = shell({ config, data, filters, loading, error, settingsOpen, sessionDetail, connectionLost, dataStale });
   const interval = document.getElementById("refresh-interval");
   if (interval) interval.value = String(config.refreshInterval);
   bind();
@@ -137,6 +142,7 @@ function incrementalUpdate() {
 
 async function refresh({ keepRange = false, automatic = false, forceRender = false } = {}) {
   if (loading) return;
+  if (automatic && navigator.onLine === false) return;
   if (automatic && interactionActive()) {
     schedule(750);
     return;
@@ -154,10 +160,16 @@ async function refresh({ keepRange = false, automatic = false, forceRender = fal
   }
   try {
     data = await loadDashboard(filters);
+    connectionLost = false;
+    dataStale = false;
+    refreshFailures = 0;
     const exists = data.sessions.some((s) => s.sessionId === sessionDetail?.sessionId);
     if (!exists) sessionDetail = data.sessions[0] ? await loadSession(data.sessions[0].sessionId) : null;
   } catch (reason) {
     error = reason instanceof Error ? reason.message : String(reason);
+    connectionLost = true;
+    dataStale = Boolean(data);
+    refreshFailures++;
   } finally {
     loading = false;
     document.documentElement.classList.remove("refreshing");
@@ -173,13 +185,16 @@ async function refresh({ keepRange = false, automatic = false, forceRender = fal
       lastRenderKey = filterKey;
       render({ preserveView: background && !filtersChanged, deferWhileInteracting: background });
     }
-    schedule();
+    const delay = refreshFailures >= 3
+      ? Math.min(60_000, Math.max(config.refreshInterval, 1000) * 2 ** Math.min(refreshFailures - 3, 5))
+      : config.refreshInterval;
+    schedule(delay);
   }
 }
 
 function schedule(delay = config.refreshInterval) {
   clearTimeout(refreshTimer);
-  if (config.refreshInterval > 0) refreshTimer = setTimeout(() => refresh({ automatic: true }), delay);
+  if (config.refreshInterval > 0 && navigator.onLine !== false) refreshTimer = setTimeout(() => refresh({ automatic: true }), delay);
 }
 
 function updateConfig(next) {
@@ -243,7 +258,10 @@ function bindDrag() {
 }
 
 function connectStream() {
+  clearTimeout(streamReconnectTimer);
+  if (navigator.onLine === false) return;
   const stream = new EventSource("/api/v1/stream");
+  stream.onopen = () => { streamBackoffMs = 1000; };
   stream.addEventListener("monitor-event", () => {
     clearTimeout(streamTimer);
     const refreshFromStream = () => {
@@ -253,7 +271,13 @@ function connectStream() {
     // Debounce multiple rapid SSE events into a single refresh
     streamTimer = setTimeout(refreshFromStream, 1000);
   });
-  stream.onerror = () => { stream.close(); setTimeout(connectStream, 5000); };
+  stream.onerror = () => {
+    if (stream.readyState !== EventSource.CLOSED) return;
+    stream.close();
+    const delay = streamBackoffMs;
+    streamBackoffMs = Math.min(30_000, streamBackoffMs * 2);
+    streamReconnectTimer = setTimeout(connectStream, delay);
+  };
 }
 
 bindInteractionGuard();
@@ -298,6 +322,20 @@ function writeURLState() {
 window.addEventListener("popstate", () => {
   readURLState();
   refresh();
+});
+
+window.addEventListener("offline", () => {
+  connectionLost = true;
+  dataStale = Boolean(data);
+  clearTimeout(refreshTimer);
+  clearTimeout(streamReconnectTimer);
+  render({ preserveView: true });
+});
+
+window.addEventListener("online", () => {
+  connectionLost = true;
+  connectStream();
+  refresh({ forceRender: true });
 });
 
 readURLState();

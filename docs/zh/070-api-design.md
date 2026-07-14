@@ -7,7 +7,8 @@
 | 方法/路径 | 描述 |
 | --- | --- |
 | `GET /health` | 进程存活 |
-| `GET /ready` | 数据库/监听器就绪 |
+| `GET /ready` | SQLite 写事务就绪状态和最近事件延迟 |
+| `GET /api/v1/dashboard` | 单次请求返回组合 Dashboard 数据 |
 | `GET /metrics` | Prometheus 文本格式 |
 | `GET /api/v1/status` | 守护进程/Gateway/存储摘要 |
 | `GET /api/v1/instances` | 实例列表 |

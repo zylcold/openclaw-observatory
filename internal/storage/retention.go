@@ -7,12 +7,26 @@ import (
 	"time"
 )
 
+const retentionDeleteBatchSize = 1000
+
+var retentionColumns = map[string]map[string]bool{
+	"events":           {"occurred_at": true},
+	"resource_samples": {"sampled_at": true},
+	"llm_calls":        {"started_at": true},
+	"tool_calls":       {"started_at": true},
+	"mcp_calls":        {"started_at": true},
+	"subagent_runs":    {"started_at": true},
+	"agent_runs":       {"started_at": true},
+	"sessions":         {"COALESCE(started_at,ended_at)": true},
+}
+
 // RetentionConfig controls how old data is purged.
 //
 // RawEventsDays  – rows in `events` older than this are deleted (default 7).
 // SamplesDays    – rows in `resource_samples` older than this are deleted.
 // AllDays        – hard cap for projection tables (sessions, agent_runs, etc.).
-//                  0 means "do not purge projection tables".
+//
+//	0 means "do not purge projection tables".
 type RetentionConfig struct {
 	RawEventsDays int
 	SamplesDays   int
@@ -115,29 +129,30 @@ func (j *RetentionJob) runOnce(ctx context.Context) {
 	}
 }
 
-// deleteBefore removes rows where `column < cutoff` and returns the count.
+// deleteBefore removes rows in bounded batches so retention does not hold the
+// SQLite write lock for an unbounded delete.
 func (r *Repository) deleteBefore(ctx context.Context, table, column string, cutoff time.Time) (int64, error) {
-	allowed := map[string]bool{
-		"events":           true,
-		"resource_samples": true,
-		"llm_calls":        true,
-		"tool_calls":       true,
-		"mcp_calls":        true,
-		"subagent_runs":    true,
-		"agent_runs":       true,
-		"sessions":         true,
-	}
-	if !allowed[table] {
+	if !retentionColumns[table][column] {
 		return 0, fmt.Errorf("retention: unknown table %q", table)
 	}
-	res, err := r.db.ExecContext(ctx,
-		fmt.Sprintf("DELETE FROM %s WHERE %s < ?", table, column),
-		cutoff.Format(time.RFC3339Nano))
-	if err != nil {
-		return 0, err
+	query := fmt.Sprintf(`DELETE FROM %s WHERE rowid IN (
+  SELECT rowid FROM %s WHERE %s < ? LIMIT ?
+)`, table, table, column)
+	var deleted int64
+	for {
+		res, err := r.db.ExecContext(ctx, query, cutoff.Format(time.RFC3339Nano), retentionDeleteBatchSize)
+		if err != nil {
+			return deleted, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return deleted, err
+		}
+		deleted += n
+		if n < retentionDeleteBatchSize {
+			return deleted, nil
+		}
 	}
-	n, _ := res.RowsAffected()
-	return n, nil
 }
 
 // RunRetentionOnce exposes the purge for ad-hoc / CLI use.

@@ -32,6 +32,10 @@ Prompt, command, and error-message values are forbidden as labels.
 | `openclaw_monitor_events_received_total` | counter | `instance,event_type` |
 | `openclaw_monitor_events_dropped_total` | counter | `instance,reason` |
 | `openclaw_monitor_event_queue_depth` | gauge | `instance` |
+| `openclaw_monitor_insert_duration_seconds` | summary | none |
+| `openclaw_monitor_reduce_duration_seconds` | summary | none |
+| `openclaw_monitor_commit_duration_seconds` | summary | none |
+| `openclaw_monitor_query_duration_seconds` | summary | none |
 
 Durations are seconds, storage is bytes, ratios range from 0–1, and counters end
 in `_total`. Histogram implementations expose `_bucket`, `_sum`, and `_count`.

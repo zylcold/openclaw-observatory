@@ -4,12 +4,81 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/zylcold/openclaw-observatory/internal/event"
 )
+
+func TestInsertEventsSplitsLargeBatchesAndAggregatesResults(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+
+	events := make([]event.Event, 0, insertBatchSize+1)
+	for i := 0; i < insertBatchSize; i++ {
+		events = append(events, testEvent(fmt.Sprintf("10000000-0000-4000-8000-%012d", i), "gateway.heartbeat", uint64(i), map[string]any{}))
+	}
+	// This duplicate lands in the second transaction and verifies that results
+	// are accumulated across transaction boundaries.
+	events = append(events, events[0])
+	result, err := repo.InsertEvents(context.Background(), events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Accepted != insertBatchSize+1 || len(result.Inserted) != insertBatchSize || result.Duplicates != 1 {
+		t.Fatalf("unexpected split batch result: %+v", result)
+	}
+	count, err := repo.Count(context.Background(), "events")
+	if err != nil || count != int64(insertBatchSize) {
+		t.Fatalf("unexpected stored event count: %d err=%v", count, err)
+	}
+}
+
+func TestDeleteBeforePurgesInBoundedBatches(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+
+	ctx := context.Background()
+	tx, err := repo.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO events(event_id,schema_version,event_type,occurred_at,instance_id,producer_id,sequence,source,payload_json,received_at) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339Nano)
+	for i := 0; i < retentionDeleteBatchSize+1; i++ {
+		if _, err := stmt.ExecContext(ctx, fmt.Sprintf("20000000-0000-4000-8000-%012d", i), 1, "gateway.heartbeat", old, "test", "test", i, "test", "{}", old); err != nil {
+			stmt.Close()
+			tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := stmt.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := repo.deleteBefore(ctx, "events", "occurred_at", time.Now().UTC().Add(-24*time.Hour))
+	if err != nil || deleted != retentionDeleteBatchSize+1 {
+		t.Fatalf("unexpected batched purge: deleted=%d err=%v", deleted, err)
+	}
+	count, err := repo.Count(ctx, "events")
+	if err != nil || count != 0 {
+		t.Fatalf("expected all expired rows purged: count=%d err=%v", count, err)
+	}
+}
 
 func testEvent(id, kind string, sequence uint64, payload map[string]any) event.Event {
 	b, _ := json.Marshal(payload)

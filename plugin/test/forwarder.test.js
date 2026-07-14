@@ -22,6 +22,32 @@ test("drops low priority first when full", () => {
   assert.equal(f.queue.at(-1).event.eventType, "gateway.stopped");
 });
 
+test("retains critical events when the queue only contains critical events", () => {
+  const f = new Forwarder({ queueCapacity: 3 });
+  for (let i = 0; i < 3; i++) f.enqueue("session.completed", { i }, "critical");
+  assert.equal(f.enqueue("gateway.stopped", {}, "critical"), true);
+  assert.equal(f.queue.length, 4);
+  assert.equal(f.queue.at(-1).event.eventType, "gateway.stopped");
+});
+
+test("probes the socket before posting and backs off with jitter", async () => {
+  const f = new Forwarder({ queueCapacity: 100 });
+  f.enqueue("gateway.heartbeat", {}, "low");
+  f.socketAvailable = async () => false;
+  f.post = () => assert.fail("post should not run when socket probe fails");
+  const before = Date.now();
+  assert.equal(await f.flush(), false);
+  assert.equal(f.failureCount, 1);
+  assert.ok(f.nextAttemptAt >= before + 125 && f.nextAttemptAt <= before + 250);
+});
+
+test("caps retry backoff at 30 seconds", () => {
+  const f = new Forwarder();
+  for (let i = 0; i < 20; i++) f.scheduleRetry();
+  const delay = f.nextAttemptAt - Date.now();
+  assert.ok(delay >= 15_000 && delay <= 30_000);
+});
+
 test("hashes session keys", () => {
   const f = new Forwarder();
   const hashed = f.sessionKeyHash("telegram:user:123");

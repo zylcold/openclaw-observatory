@@ -9,7 +9,8 @@ SSE. The default listener is the local web proxy; the backend listens on
 | Method/path | Description |
 | --- | --- |
 | `GET /health` | Process liveness |
-| `GET /ready` | Database/listener readiness |
+| `GET /ready` | SQLite write-transaction readiness and latest event delay |
+| `GET /api/v1/dashboard` | Composite dashboard data in one request |
 | `GET /metrics` | Prometheus text format |
 | `GET /api/v1/status` | Daemon/Gateway/storage summary |
 | `GET /api/v1/instances` | Instances |

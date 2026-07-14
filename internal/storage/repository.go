@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zylcold/openclaw-observatory/internal/event"
@@ -16,8 +17,40 @@ import (
 )
 
 type Repository struct {
-	db   *sql.DB
-	path string
+	db           *sql.DB
+	path         string
+	writeMetrics writeMetrics
+}
+
+type writeMetrics struct {
+	mu            sync.Mutex
+	insertSeconds float64
+	insertCount   uint64
+	reduceSeconds float64
+	reduceCount   uint64
+	commitSeconds float64
+	commitCount   uint64
+	querySeconds  float64
+	queryCount    uint64
+}
+
+// WriteMetricsSnapshot holds process-lifetime write timings for Prometheus.
+// Times are measured around database operations, including failed attempts.
+type WriteMetricsSnapshot struct {
+	InsertSeconds float64
+	InsertCount   uint64
+	ReduceSeconds float64
+	ReduceCount   uint64
+	CommitSeconds float64
+	CommitCount   uint64
+	QuerySeconds  float64
+	QueryCount    uint64
+}
+
+// Readiness describes the storage checks used by the daemon readiness probe.
+type Readiness struct {
+	LastEventReceivedAt *time.Time
+	EventDelay          time.Duration
 }
 
 type InsertResult struct {
@@ -31,6 +64,10 @@ type ProcessRef struct {
 	ProcessID  int    `json:"processId"`
 }
 
+// insertBatchSize bounds how long a single SQLite write transaction holds the
+// database lock. Larger requests are split while preserving event order.
+const insertBatchSize = 50
+
 func Open(path string) (*Repository, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -41,7 +78,7 @@ func Open(path string) (*Repository, error) {
 	}
 	db.SetMaxOpenConns(1)
 	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000", "PRAGMA synchronous=NORMAL",
+		"PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=30000", "PRAGMA synchronous=NORMAL",
 	} {
 		if _, err := db.Exec(pragma); err != nil {
 			db.Close()
@@ -94,6 +131,80 @@ func (r *Repository) Close() error { return r.db.Close() }
 
 func (r *Repository) Ping(ctx context.Context) error { return r.db.PingContext(ctx) }
 
+// Readiness verifies that SQLite can acquire a write transaction and reports
+// the age of the most recently received event. BEGIN IMMEDIATE does not change
+// data, but it fails for read-only databases and unavailable write locks.
+func (r *Repository) Readiness(ctx context.Context) (Readiness, error) {
+	conn, err := r.db.Conn(ctx)
+	if err != nil {
+		return Readiness{}, err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return Readiness{}, fmt.Errorf("acquire SQLite write transaction: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "ROLLBACK"); err != nil {
+		return Readiness{}, fmt.Errorf("release SQLite write transaction: %w", err)
+	}
+
+	var receivedAt sql.NullString
+	if err := conn.QueryRowContext(ctx, `SELECT MAX(received_at) FROM events`).Scan(&receivedAt); err != nil {
+		return Readiness{}, err
+	}
+	if !receivedAt.Valid || receivedAt.String == "" {
+		return Readiness{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, receivedAt.String)
+	if err != nil {
+		return Readiness{}, fmt.Errorf("parse latest event timestamp: %w", err)
+	}
+	delay := time.Since(parsed)
+	if delay < 0 {
+		delay = 0
+	}
+	return Readiness{LastEventReceivedAt: &parsed, EventDelay: delay}, nil
+}
+
+func (r *Repository) WriteMetrics() WriteMetricsSnapshot {
+	r.writeMetrics.mu.Lock()
+	defer r.writeMetrics.mu.Unlock()
+	return WriteMetricsSnapshot{
+		InsertSeconds: r.writeMetrics.insertSeconds,
+		InsertCount:   r.writeMetrics.insertCount,
+		ReduceSeconds: r.writeMetrics.reduceSeconds,
+		ReduceCount:   r.writeMetrics.reduceCount,
+		CommitSeconds: r.writeMetrics.commitSeconds,
+		CommitCount:   r.writeMetrics.commitCount,
+		QuerySeconds:  r.writeMetrics.querySeconds,
+		QueryCount:    r.writeMetrics.queryCount,
+	}
+}
+
+func (r *Repository) recordWriteTiming(stage string, elapsed time.Duration) {
+	r.writeMetrics.mu.Lock()
+	defer r.writeMetrics.mu.Unlock()
+	switch stage {
+	case "insert":
+		r.writeMetrics.insertSeconds += elapsed.Seconds()
+		r.writeMetrics.insertCount++
+	case "reduce":
+		r.writeMetrics.reduceSeconds += elapsed.Seconds()
+		r.writeMetrics.reduceCount++
+	case "commit":
+		r.writeMetrics.commitSeconds += elapsed.Seconds()
+		r.writeMetrics.commitCount++
+	case "query":
+		r.writeMetrics.querySeconds += elapsed.Seconds()
+		r.writeMetrics.queryCount++
+	}
+}
+
+// RecordQueryDuration records end-to-end API query time for daemon health
+// metrics. It intentionally has no labels to keep cardinality bounded.
+func (r *Repository) RecordQueryDuration(elapsed time.Duration) {
+	r.recordWriteTiming("query", elapsed)
+}
+
 func (r *Repository) SchemaVersion(ctx context.Context) (int, error) {
 	var version int
 	err := r.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&version)
@@ -102,16 +213,32 @@ func (r *Repository) SchemaVersion(ctx context.Context) (int, error) {
 
 func (r *Repository) InsertEvents(ctx context.Context, events []event.Event) (InsertResult, error) {
 	result := InsertResult{Accepted: len(events)}
+	for start := 0; start < len(events); start += insertBatchSize {
+		end := min(start+insertBatchSize, len(events))
+		batch, err := r.insertBatch(ctx, events[start:end])
+		result.Duplicates += batch.Duplicates
+		result.Inserted = append(result.Inserted, batch.Inserted...)
+		if err != nil {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
+func (r *Repository) insertBatch(ctx context.Context, events []event.Event) (InsertResult, error) {
+	result := InsertResult{Accepted: len(events)}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err
 	}
 	defer tx.Rollback()
 	for _, e := range events {
+		started := time.Now()
 		res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO events
       (event_id,schema_version,event_type,occurred_at,instance_id,producer_id,process_id,sequence,source,payload_json,received_at)
       VALUES(?,?,?,?,?,?,?,?,?,?,?)`, e.EventID, e.SchemaVersion, e.EventType, timestamp(e.OccurredAt), e.InstanceID,
 			e.ProducerID, e.ProcessID, e.Sequence, e.Source, string(e.Payload), timestamp(time.Now()))
+		r.recordWriteTiming("insert", time.Since(started))
 		if err != nil {
 			return result, err
 		}
@@ -120,14 +247,20 @@ func (r *Repository) InsertEvents(ctx context.Context, events []event.Event) (In
 			result.Duplicates++
 			continue
 		}
+		started = time.Now()
 		if err := reduce(ctx, tx, e); err != nil {
+			r.recordWriteTiming("reduce", time.Since(started))
 			return result, fmt.Errorf("reduce %s: %w", e.EventType, err)
 		}
+		r.recordWriteTiming("reduce", time.Since(started))
 		result.Inserted = append(result.Inserted, e)
 	}
+	started := time.Now()
 	if err := tx.Commit(); err != nil {
+		r.recordWriteTiming("commit", time.Since(started))
 		return result, err
 	}
+	r.recordWriteTiming("commit", time.Since(started))
 	return result, nil
 }
 

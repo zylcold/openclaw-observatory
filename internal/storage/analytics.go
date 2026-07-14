@@ -23,13 +23,27 @@ const runAgentsCTE = `run_agents AS (
   LEFT JOIN subagent_runs sr ON sr.instance_id=ar.instance_id AND sr.subagent_id=ar.run_id
 )`
 
+// agentStatsRunAgentsCTE applies the broadest filters before joining related
+// tables, keeping the downstream aggregate CTEs proportional to the selected
+// dashboard range rather than the full agent_runs table.
+const agentStatsRunAgentsCTE = `filtered_agent_runs AS (
+  SELECT instance_id,run_id,session_id,status,started_at,ended_at,duration_ms,error_category,agent_id
+  FROM agent_runs
+  WHERE (@instance='' OR instance_id=@instance)
+    AND (@from='' OR started_at>=@from) AND (@to='' OR started_at<=@to)
+), run_agents AS (
+  SELECT ar.instance_id,ar.run_id,ar.session_id,ar.status,ar.started_at,ar.ended_at,ar.duration_ms,ar.error_category,
+    COALESCE(NULLIF(ar.agent_id,''),NULLIF(sr.agent_id,''),NULLIF(s.agent_id,''),'unknown') AS agent_id
+  FROM filtered_agent_runs ar
+  LEFT JOIN sessions s ON s.instance_id=ar.instance_id AND s.session_id=ar.session_id
+  LEFT JOIN subagent_runs sr ON sr.instance_id=ar.instance_id AND sr.subagent_id=ar.run_id
+)`
+
 func (r *Repository) AgentStats(ctx context.Context, opts ListOptions) ([]map[string]any, error) {
-	q := `WITH ` + runAgentsCTE + `,
+	q := `WITH ` + agentStatsRunAgentsCTE + `,
   filtered_runs AS (
     SELECT * FROM run_agents
-    WHERE (@instance='' OR instance_id=@instance)
-      AND (@from='' OR started_at>=@from) AND (@to='' OR started_at<=@to)
-      AND (@agent='' OR agent_id=@agent)
+    WHERE (@agent='' OR agent_id=@agent)
   ),
   llm_by_run AS (
     SELECT l.instance_id,l.run_id,COUNT(*) AS requests,

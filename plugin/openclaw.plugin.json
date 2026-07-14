@@ -13,7 +13,9 @@
     "properties": {
       "socketPath": { "type": "string", "maxLength": 1024 },
       "queueCapacity": { "type": "integer", "minimum": 100, "maximum": 50000 },
-      "flushIntervalMs": { "type": "integer", "minimum": 50, "maximum": 5000 }
+      "flushIntervalMs": { "type": "integer", "minimum": 50, "maximum": 5000 },
+      "requestTimeoutMs": { "type": "integer", "minimum": 250, "maximum": 30000 },
+      "forceFlushTimeoutMs": { "type": "integer", "minimum": 50, "maximum": 5000 }
     }
   }
 }

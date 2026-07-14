@@ -47,12 +47,18 @@ matched to the last call by run ID, stable hashed session key, or session ID.
 
 - Default capacity: 10,000 events.
 - Single-event cap: 16 KiB; batch cap: 1 MiB/100 events.
-- Flush interval: 250 ms when healthy, bounded backoff to 5 seconds on failure.
+- Flush interval: 250 ms when healthy; failed socket probes use jittered
+  exponential backoff from 250 ms to 30 seconds.
+- The socket path is checked before each retry. Normal delivery uses a
+  configurable 5-second request timeout; shutdown flushes use a separately
+  configurable 250 ms timeout.
 - Critical: crash and lifecycle terminal events.
 - Normal: Agent, LLM, Tool, MCP, Session, and Subagent lifecycle.
 - Low: heartbeats and high-frequency intermediate events.
-- When full, remove the oldest Low event before dropping Normal. Critical is
-  dropped only when no lower-priority entry exists.
+- When full, remove the oldest Low event before dropping Normal. Critical
+  lifecycle events are retained even if that temporarily exceeds queue capacity.
+- Heartbeats report both queue depth and configured capacity. The daemon emits a
+  warning when depth reaches 80% and exposes the latest depth in Prometheus.
 - Dropped counts are coalesced into `monitor.events_dropped` when capacity is
   available again.
 

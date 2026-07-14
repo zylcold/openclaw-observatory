@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { access } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { request } from "node:http";
 import { join } from "node:path";
@@ -33,6 +34,8 @@ export class Forwarder {
     this.socketPath = config.socketPath || join(homedir(), ".openclaw-observatory", "observatory.sock");
     this.capacity = config.queueCapacity || 10_000;
     this.flushIntervalMs = config.flushIntervalMs || 250;
+    this.requestTimeoutMs = config.requestTimeoutMs || 5_000;
+    this.forceFlushTimeoutMs = config.forceFlushTimeoutMs || 250;
     this.logger = logger;
     this.instanceId = `local-${hash(`${hostname()}|${homedir()}`)}`;
     this.producerId = `plugin-${randomUUID()}`;
@@ -86,6 +89,13 @@ export class Forwarder {
         candidate = this.queue.findIndex((entry) => entry.priority === p);
       }
       if (candidate < 0) {
+        // A terminal lifecycle event is more valuable than the configured
+        // in-memory limit. Keep it for the next daemon recovery rather than
+        // losing the only record of a completed/crashed run.
+        if (incomingPriority === PRIORITY.critical) {
+          this.queue.push({ event, body, bytes: Buffer.byteLength(body), priority: incomingPriority });
+          return true;
+        }
         this.recordDrop("queue_full");
         return false;
       }
@@ -160,7 +170,7 @@ export class Forwarder {
         }, terminal ? "critical" : "normal", evt.ts); break;
       }
       case "diagnostic.heartbeat":
-        this.enqueue("gateway.heartbeat", { active: evt.active, waiting: evt.waiting, queued: evt.queued, queueDepth: this.queue.length }, "low", evt.ts); break;
+        this.enqueue("gateway.heartbeat", { active: evt.active, waiting: evt.waiting, queued: evt.queued, queueDepth: this.queue.length, queueCapacity: this.capacity }, "low", evt.ts); break;
       case "diagnostic.async_queue.dropped":
         this.enqueue("monitor.events_dropped", { count: evt.droppedEvents, reason: "openclaw_diagnostic_queue", queueDepth: evt.queueLength }, "critical", evt.ts); break;
     }
@@ -225,11 +235,26 @@ export class Forwarder {
     const batch = this.queue.slice(0, count); const body = `[${batch.map((x) => x.body).join(",")}]`;
     this.inflight = true;
     try {
-      await this.post(body, force ? 250 : 1500);
+      if (!await this.socketAvailable()) {
+        this.scheduleRetry();
+        return false;
+      }
+      await this.post(body, force ? this.forceFlushTimeoutMs : this.requestTimeoutMs);
       this.queue.splice(0, count); this.failureCount = 0; this.nextAttemptAt = 0; this.maybeQueueDropNotice(); return true;
     } catch {
-      this.failureCount++; this.nextAttemptAt = Date.now() + Math.min(5000, 250 * 2 ** Math.min(this.failureCount, 5)); return false;
+      this.scheduleRetry(); return false;
     } finally { this.inflight = false; }
+  }
+
+  async socketAvailable() {
+    try { await access(this.socketPath); return true; } catch { return false; }
+  }
+
+  scheduleRetry() {
+    this.failureCount++;
+    const ceiling = Math.min(30_000, 250 * 2 ** Math.min(this.failureCount - 1, 7));
+    const jittered = Math.floor(ceiling * (0.5 + Math.random() * 0.5));
+    this.nextAttemptAt = Date.now() + jittered;
   }
 
   post(body, timeoutMs) {

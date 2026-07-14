@@ -278,7 +278,26 @@ func (r *Repository) Status(ctx context.Context) (map[string]any, error) {
 	var activeSessions, activeRuns int64
 	_ = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE status='active'`).Scan(&activeSessions)
 	_ = r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM agent_runs WHERE status='active'`).Scan(&activeRuns)
-	return map[string]any{"instances": instances, "counts": counts, "activeSessions": activeSessions, "activeRuns": activeRuns, "databaseBytes": r.DBSize()}, nil
+	var lastEventReceivedAt sql.NullString
+	if err := r.db.QueryRowContext(ctx, `SELECT MAX(received_at) FROM events`).Scan(&lastEventReceivedAt); err != nil {
+		return nil, err
+	}
+	var eventQueueDepth float64
+	if err := r.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(COALESCE(CAST(json_extract(payload_json,'$.queueDepth') AS REAL),0)),0) FROM events WHERE rowid IN (SELECT MAX(rowid) FROM events WHERE event_type='gateway.heartbeat' GROUP BY instance_id)`).Scan(&eventQueueDepth); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"instances": instances, "counts": counts, "activeSessions": activeSessions, "activeRuns": activeRuns,
+		"databaseBytes": r.DBSize(), "dbSizeBytes": r.DBSize(), "eventQueueDepth": eventQueueDepth,
+		"lastEventReceivedAt": nullableString(lastEventReceivedAt),
+	}, nil
+}
+
+func nullableString(value sql.NullString) any {
+	if !value.Valid || value.String == "" {
+		return nil
+	}
+	return value.String
 }
 
 func queryMaps(ctx context.Context, db *sql.DB, query string, args ...any) ([]map[string]any, error) {
@@ -327,8 +346,8 @@ type MetricRow struct {
 	Value  float64
 }
 type MetricsSnapshot struct {
-	GatewayUp, Uptime, Restarts, SessionsActive, RunsActive                                              []MetricRow
-	Runs, LLM, LLMTokensInput, LLMTokensOutput, LLMCost, Tools, ToolErrors, Resources, Received, Dropped []MetricRow
+	GatewayUp, Uptime, Restarts, SessionsActive, RunsActive                                                          []MetricRow
+	Runs, LLM, LLMTokensInput, LLMTokensOutput, LLMCost, Tools, ToolErrors, Resources, Received, Dropped, QueueDepth []MetricRow
 }
 
 func (r *Repository) Metrics(ctx context.Context, nowUnix float64) (MetricsSnapshot, error) {
@@ -352,6 +371,7 @@ func (r *Repository) Metrics(ctx context.Context, nowUnix float64) (MetricsSnaps
 		{&s.ToolErrors, `SELECT instance_id,COALESCE(tool_name,'unknown'),COALESCE(error_category,'unknown'),COUNT(*) FROM tool_calls WHERE status='failed' GROUP BY instance_id,tool_name,error_category`, []string{"instance", "tool", "reason"}},
 		{&s.Received, `SELECT instance_id,event_type,COUNT(*) FROM events GROUP BY instance_id,event_type`, []string{"instance", "event_type"}},
 		{&s.Dropped, `SELECT instance_id,COALESCE(json_extract(payload_json,'$.reason'),'unknown'),SUM(COALESCE(json_extract(payload_json,'$.count'),1)) FROM events WHERE event_type='monitor.events_dropped' GROUP BY instance_id,2`, []string{"instance", "reason"}},
+		{&s.QueueDepth, `SELECT instance_id,COALESCE(CAST(json_extract(payload_json,'$.queueDepth') AS REAL),0) FROM events WHERE rowid IN (SELECT MAX(rowid) FROM events WHERE event_type='gateway.heartbeat' GROUP BY instance_id)`, []string{"instance"}},
 	}
 	for _, item := range queries {
 		args := []any{}

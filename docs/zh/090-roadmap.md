@@ -160,11 +160,11 @@
 - daemon 崩溃期间队列满后直接丢事件（`queue_full`），critical 事件（`gateway.started/stopped`、`session.completed`）也可能被丢弃
 
 **改进计划：**
-- [ ] flush 前探测 socket 连通性（`fs.access` 或 `connect` 检查），避免无意义 POST
-- [ ] 指数退避上限提高到 30s 并加入抖动（jitter），daemon 恢复后快速回连
-- [ ] critical 事件保护：队列满时优先丢弃最低优先级事件，确保 `gateway.started/stopped`、`session.completed` 等关键事件不丢失
-- [ ] 队列深度通过 heartbeat 事件上报 daemon，daemon 根据 `queueDepth` 记录 backpressure 告警日志
-- [ ] 添加 `--queue-capacity` 命令行参数，允许调大队列上限
+- [x] flush 前探测 socket 连通性（`fs.access` 或 `connect` 检查），避免无意义 POST
+- [x] 指数退避上限提高到 30s 并加入抖动（jitter），daemon 恢复后快速回连
+- [x] critical 事件保护：队列满时优先丢弃最低优先级事件，确保 `gateway.started/stopped`、`session.completed` 等关键事件不丢失
+- [x] 队列深度通过 heartbeat 事件上报 daemon，daemon 根据 `queueDepth` 记录 backpressure 告警日志
+- [x] 添加可配置的 `queueCapacity` 插件选项，允许调大队列上限
 
 ### 5.2 Daemon 崩溃防护与恢复
 
@@ -177,9 +177,9 @@
 **改进计划：**
 - [ ] 启动时检测并清理 SQLite stale lock 文件（`.db-wal`、`.db-shm`）
 - [ ] HTTP server 致命错误恢复：瞬态错误自动重试（bind 冲突除外）
-- [ ] SIGBUS / SIGSEGV handler：写入 crash dump 到 `logs/`，包含 goroutine 堆栈
-- [ ] 健康检查增强：`/ready` 端点验证 SQLite 可写性和最近事件延迟
-- [ ] 进程采样错误追踪：连续失败计数器，超过 N 次后标记 `gateway.crashed`
+- [x] 运行时 crash 输出：将未捕获 panic/致命错误的 goroutine 堆栈写入 `logs/`
+- [x] 健康检查增强：`/ready` 端点验证 SQLite 可写性和最近事件延迟
+- [x] 进程采样错误追踪：连续失败计数器，超过 N 次后标记 `gateway.crashed`
 
 ### 5.3 数据写入健壮性
 
@@ -191,11 +191,11 @@
 - 没有写入审计
 
 **改进计划：**
-- [ ] `busy_timeout` 提高到 30s，适应长查询场景
-- [ ] 批量写入拆分：单次 batch 超过 50 个事件时拆分为多个小事务（减少锁持有时间）
-- [ ] Retention DELETE 改用分批删除（`WHERE rowid IN (SELECT rowid FROM ... LIMIT 1000)`），避免全表扫描
+- [x] `busy_timeout` 提高到 30s，适应长查询场景
+- [x] 批量写入拆分：单次 batch 超过 50 个事件时拆分为多个小事务（减少锁持有时间）
+- [x] Retention DELETE 改用分批删除（`WHERE rowid IN (SELECT rowid FROM ... LIMIT 1000)`），避免全表扫描
 - [ ] 定期 VACUUM（retention job 完成后触发，低峰期节流执行）
-- [ ] 写入性能指标：暴露 `INSERT OR IGNORE` 耗时、reduce 耗时、事务提交耗时到 `/metrics`
+- [x] 写入性能指标：暴露 `INSERT OR IGNORE` 耗时、reduce 耗时、事务提交耗时到 `/metrics`
 - [ ] 可选写入审计日志（`--audit-log` flag），记录每批的 accepted/duplicates/errors
 
 ### 5.4 前端断线重连与错误恢复
@@ -207,13 +207,13 @@
 - 背景自动刷新失败后没有退避策略，一直按固定间隔重试
 
 **改进计划：**
-- [ ] SSE 重连加入指数退避（1s → 2s → 4s → … → 30s），连接成功后重置
-- [ ] SSE `onerror` 区分 `readyState`：CLOSED = 重连，CONNECTING = 等待
-- [ ] `fetch()` 加入 AbortController + 10s 超时，超时后重试一次
-- [ ] 离线横幅：daemon 不可达时显示"正在重连…"状态条，恢复后自动消失
-- [ ] 背景刷新退避：连续失败 3 次后间隔翻倍，上限 60s
-- [ ] 监听 `navigator.onLine`：离线时暂停刷新，上线后立即触发一次
-- [ ] 数据缓存：fetch 失败时继续展示上一次成功的 dashboard 数据（标注"数据可能已过期"）
+- [x] SSE 重连加入指数退避（1s → 2s → 4s → … → 30s），连接成功后重置
+- [x] SSE `onerror` 区分 `readyState`：CLOSED = 重连，CONNECTING = 等待
+- [x] `fetch()` 加入 AbortController + 10s 超时，超时后重试一次
+- [x] 离线横幅：daemon 不可达时显示"正在重连…"状态条，恢复后自动消失
+- [x] 背景刷新退避：连续失败 3 次后间隔翻倍，上限 60s
+- [x] 监听 `navigator.onLine`：离线时暂停刷新，上线后立即触发一次
+- [x] 数据缓存：fetch 失败时继续展示上一次成功的 dashboard 数据（标注"数据可能已过期"）
 
 ### 5.5 性能优化
 
@@ -226,10 +226,10 @@
 
 **改进计划：**
 - [ ] `timeseries` 查询优化：预计算桶边界，用 `CASE WHEN` 替代 `strftime`
-- [ ] `agent_stats`：将时间范围过滤下推到 CTE 内部，减少 JOIN 中间行数
+- [x] `agent_stats`：将时间范围过滤下推到 CTE 内部，减少 JOIN 中间行数
 - [ ] 替换 `lsof` 为更快的 FD 统计方式（macOS：`proc_info` syscall；Linux：`/proc/<pid>/fd` readdir）
-- [ ] 为长查询添加 statement timeout（SQLite `busy_timeout` 不覆盖此场景）
-- [ ] 前端：合并部分 API 为 composite `/api/v1/dashboard` 端点（单次请求返回 KPI + 图表数据）
+- [x] 为长查询添加 statement timeout（SQLite `busy_timeout` 不覆盖此场景）
+- [x] 前端：合并 Dashboard API 为 composite `/api/v1/dashboard` 端点（单次请求返回 KPI + 图表数据）
 - [ ] SQLite 查询计划分析：对关键查询运行 `EXPLAIN QUERY PLAN` 建立基线
 
 ### 5.6 监控与告警
@@ -240,10 +240,10 @@
 - 日志仅 `slog` 输出到 stderr，无结构化日志文件轮转
 
 **改进计划：**
-- [ ] 新增 Prometheus 指标：`openclaw_monitor_insert_duration_seconds`、`openclaw_monitor_queue_depth`、`openclaw_monitor_query_duration_seconds`
-- [ ] 日志轮转：`slog` 输出写入 `logs/observatoryd.log`，按天轮转，保留 7 天
-- [ ] 内置告警阈值：事件队列 > 80% 容量 → WARN，写入延迟 > 1s → WARN
-- [ ] `status` API 返回 `eventQueueDepth`、`lastEventReceivedAt`、`dbSizeBytes`
+- [x] 新增 Prometheus 指标：`openclaw_monitor_insert_duration_seconds`、`openclaw_monitor_queue_depth`、`openclaw_monitor_query_duration_seconds`
+- [x] 日志轮转：`slog` 输出写入 `logs/observatoryd-YYYY-MM-DD.log`，按天轮转，保留 7 天
+- [x] 内置告警阈值：事件队列 > 80% 容量 → WARN，写入延迟 > 1s → WARN
+- [x] `status` API 返回 `eventQueueDepth`、`lastEventReceivedAt`、`dbSizeBytes`
 
 **退出条件：**
 - daemon 崩溃重启后 critical 事件零丢失

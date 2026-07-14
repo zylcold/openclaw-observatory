@@ -31,6 +31,10 @@ Prometheus 仅存储聚合。会话、运行、调用、用户、请求、路径
 | `openclaw_monitor_events_received_total` | counter | `instance,event_type` |
 | `openclaw_monitor_events_dropped_total` | counter | `instance,reason` |
 | `openclaw_monitor_event_queue_depth` | gauge | `instance` |
+| `openclaw_monitor_insert_duration_seconds` | summary | 无 |
+| `openclaw_monitor_reduce_duration_seconds` | summary | 无 |
+| `openclaw_monitor_commit_duration_seconds` | summary | 无 |
+| `openclaw_monitor_query_duration_seconds` | summary | 无 |
 
 持续时间单位为秒，存储单位为字节，比率范围为 0-1，计数器以 `_total` 结尾。直方图实现暴露 `_bucket`、`_sum` 和 `_count`。
 
