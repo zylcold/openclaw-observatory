@@ -81,17 +81,6 @@ func run() error {
 	srv := server.New(repo, logger)
 	ingestHTTP := &http.Server{Handler: srv.IngestHandler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	publicHTTP := &http.Server{Handler: srv.PublicHandler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
-	errCh := make(chan error, 2)
-	go func() {
-		if e := ingestHTTP.Serve(uds); e != nil && !errors.Is(e, http.ErrServerClosed) {
-			errCh <- e
-		}
-	}()
-	go func() {
-		if e := publicHTTP.Serve(tcp); e != nil && !errors.Is(e, http.ErrServerClosed) {
-			errCh <- e
-		}
-	}()
 	retentionJob := storage.NewRetentionJob(repo, storage.RetentionConfig{
 		RawEventsDays: *retentionEvents,
 		SamplesDays:   *retentionSamples,
@@ -101,6 +90,10 @@ func run() error {
 	defer stopRetention()
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 2)
+	go serveWithRetry(ctx, ingestHTTP, uds, func() (net.Listener, error) { return listenUnix(*socketPath) }, "ingest", logger, errCh)
+	go serveWithRetry(ctx, publicHTTP, tcp, func() (net.Listener, error) { return net.Listen("tcp", *listenAddr) }, "public", logger, errCh)
 	collector := process.NewCollector(repo, *sampleInterval, srv.Insert)
 	go collector.Run(ctx)
 	logger.Info("OpenClaw Observatory ready", "http", "http://"+*listenAddr, "socket", *socketPath, "database", *dbPath, "version", server.Version,
@@ -132,6 +125,47 @@ func configureCrashOutput(logDir string) error {
 	}
 	defer file.Close()
 	return debug.SetCrashOutput(file, debug.CrashOptions{})
+}
+
+const serverRetryDelay = time.Second
+
+func serveWithRetry(ctx context.Context, srv *http.Server, listener net.Listener, reopen func() (net.Listener, error), name string, logger *slog.Logger, errCh chan<- error) {
+	for {
+		err := srv.Serve(listener)
+		if err == nil || errors.Is(err, http.ErrServerClosed) || ctx.Err() != nil {
+			return
+		}
+		if !isTemporaryNetError(err) {
+			errCh <- fmt.Errorf("%s HTTP server: %w", name, err)
+			return
+		}
+		logger.Warn("temporary HTTP server failure; retrying listener", "server", name, "error", err, "retry_in", serverRetryDelay)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(serverRetryDelay):
+			}
+			listener, err = reopen()
+			if err == nil {
+				break
+			}
+			if !isTemporaryNetError(err) {
+				errCh <- fmt.Errorf("reopen %s listener: %w", name, err)
+				return
+			}
+			logger.Warn("temporary listener reopen failure; retrying", "server", name, "error", err)
+		}
+	}
+}
+
+func isTemporaryNetError(err error) bool {
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
+		return true
+	}
+	var temporary interface{ Temporary() bool }
+	return errors.As(err, &temporary) && temporary.Temporary()
 }
 
 func listenUnix(path string) (net.Listener, error) {

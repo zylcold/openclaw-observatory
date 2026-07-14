@@ -176,7 +176,7 @@
 
 **改进计划：**
 - [ ] 启动时检测并清理 SQLite stale lock 文件（`.db-wal`、`.db-shm`）
-- [ ] HTTP server 致命错误恢复：瞬态错误自动重试（bind 冲突除外）
+- [x] HTTP server 致命错误恢复：瞬态错误自动重试（bind 冲突除外）
 - [x] 运行时 crash 输出：将未捕获 panic/致命错误的 goroutine 堆栈写入 `logs/`
 - [x] 健康检查增强：`/ready` 端点验证 SQLite 可写性和最近事件延迟
 - [x] 进程采样错误追踪：连续失败计数器，超过 N 次后标记 `gateway.crashed`
@@ -230,7 +230,7 @@
 - [ ] 替换 `lsof` 为更快的 FD 统计方式（macOS：`proc_info` syscall；Linux：`/proc/<pid>/fd` readdir）
 - [x] 为长查询添加 statement timeout（SQLite `busy_timeout` 不覆盖此场景）
 - [x] 前端：合并 Dashboard API 为 composite `/api/v1/dashboard` 端点（单次请求返回 KPI + 图表数据）
-- [ ] SQLite 查询计划分析：对关键查询运行 `EXPLAIN QUERY PLAN` 建立基线
+- [x] SQLite 查询计划分析：对关键查询运行 `EXPLAIN QUERY PLAN` 建立基线
 
 ### 5.6 监控与告警
 

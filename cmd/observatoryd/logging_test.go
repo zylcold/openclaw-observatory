@@ -1,11 +1,21 @@
 package main
 
 import (
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+type temporaryNetError struct{}
+
+func (temporaryNetError) Error() string   { return "temporary" }
+func (temporaryNetError) Timeout() bool   { return false }
+func (temporaryNetError) Temporary() bool { return true }
+
+var _ net.Error = temporaryNetError{}
 
 func TestDailyLogWriterRotatesAndPrunes(t *testing.T) {
 	day := time.Date(2026, 7, 10, 0, 0, 0, 0, time.UTC)
@@ -32,5 +42,14 @@ func TestDailyLogWriterRotatesAndPrunes(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(w.dir, "observatoryd-2026-07-10.log")); !os.IsNotExist(err) {
 		t.Fatalf("old log should have been removed, err=%v", err)
+	}
+}
+
+func TestIsTemporaryNetError(t *testing.T) {
+	if !isTemporaryNetError(temporaryNetError{}) {
+		t.Fatal("expected temporary network error to retry")
+	}
+	if isTemporaryNetError(errors.New("address already in use")) {
+		t.Fatal("non-network bind error must not retry")
 	}
 }

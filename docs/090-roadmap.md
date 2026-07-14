@@ -177,7 +177,7 @@ daemon outage does not interrupt the run.
 
 **Plan:**
 - [ ] On startup, detect and clean up stale SQLite lock files (`.db-wal`, `.db-shm`)
-- [ ] HTTP server fatal error recovery: retry listen on transient errors (exclude bind conflicts)
+- [x] HTTP server fatal error recovery: retry listen on transient errors (exclude bind conflicts)
 - [x] Runtime crash output: write unhandled panic/fatal-error dumps to `logs/` with goroutine stacks
 - [x] Enhanced health check: `/ready` validates SQLite writability and recent event latency
 - [x] Process sampling error tracking: consecutive failure counter; after N failures, emit `gateway.crashed`
@@ -231,7 +231,7 @@ daemon outage does not interrupt the run.
 - [ ] Replace `lsof` with faster FD counting (macOS: `proc_info` syscall; Linux: `/proc/<pid>/fd` readdir)
 - [x] Add statement timeout for long-running queries (SQLite `busy_timeout` does not cover this)
 - [x] Frontend: merge dashboard APIs into composite `/api/v1/dashboard` endpoint (single round-trip for KPIs + chart data)
-- [ ] SQLite query plan analysis: run `EXPLAIN QUERY PLAN` on critical queries and establish baselines
+- [x] SQLite query plan analysis: run `EXPLAIN QUERY PLAN` on critical queries and establish baselines
 
 ### 5.6 Monitoring & Alerting
 
