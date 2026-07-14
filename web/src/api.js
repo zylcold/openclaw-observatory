@@ -29,6 +29,9 @@ async function get(path, params) {
   }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body?.error?.message || `${response.status} ${response.statusText}`);
+  if (!Object.prototype.hasOwnProperty.call(body, "data")) {
+    throw new Error("Observatory API 返回了无效响应");
+  }
   return body.data;
 }
 

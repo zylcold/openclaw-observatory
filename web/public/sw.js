@@ -1,7 +1,7 @@
 // OpenClaw Observatory Service Worker
 // Strategy: network-first for API/HTML, cache-first for static assets
 
-const VERSION = "v1";
+const VERSION = "v2";
 const STATIC_CACHE = `observatory-static-${VERSION}`;
 const RUNTIME_CACHE = `observatory-runtime-${VERSION}`;
 
@@ -44,8 +44,20 @@ self.addEventListener("fetch", (event) => {
   // Only handle same-origin GET requests
   if (request.method !== "GET" || url.origin !== self.location.origin) return;
 
-  // Network-first for API and navigation requests
-  if (url.pathname.startsWith("/api") || request.mode === "navigate") {
+  // API responses must never fall back to HTML: callers expect JSON and can
+  // display a recoverable offline state for a 503 response.
+  if (url.pathname.startsWith("/api")) {
+    event.respondWith(
+      fetch(request).catch(() => new Response(JSON.stringify({ error: { message: "Observatory 服务暂时不可用" } }), {
+        status: 503,
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+      }))
+    );
+    return;
+  }
+
+  // Network-first for navigation requests.
+  if (request.mode === "navigate") {
     event.respondWith(
       fetch(request)
         .then((response) => {
