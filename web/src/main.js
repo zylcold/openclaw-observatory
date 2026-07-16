@@ -15,6 +15,7 @@ let sessionDetail = null;
 let loading = false;
 let error = "";
 let settingsOpen = false;
+let kpiEditorOpen = false;
 let refreshTimer = null;
 let streamTimer = null;
 let interactionTimer = null;
@@ -114,7 +115,7 @@ function render({ preserveView = false, deferWhileInteracting = false } = {}) {
   setChartAnimation(!preserveView && !hasRenderedData);
   setRange(filters.range);
   document.documentElement.dataset.theme = config.theme;
-  app.innerHTML = shell({ config, data, filters, loading, error, settingsOpen, sessionDetail, connectionLost, dataStale });
+  app.innerHTML = shell({ config, data, filters, loading, error, settingsOpen, sessionDetail, connectionLost, dataStale, kpiEditorOpen });
   const interval = document.getElementById("refresh-interval");
   if (interval) interval.value = String(config.refreshInterval);
   bind();
@@ -214,6 +215,17 @@ function bind() {
   document.getElementById("settings-toggle")?.addEventListener("click", () => { settingsOpen = true; render(); });
   document.getElementById("settings-close")?.addEventListener("click", () => { settingsOpen = false; render(); });
   document.getElementById("drawer-backdrop")?.addEventListener("click", () => { settingsOpen = false; render(); });
+  document.getElementById("kpi-edit-toggle")?.addEventListener("click", () => { kpiEditorOpen = !kpiEditorOpen; render({ preserveView: true }); });
+  document.querySelectorAll("[data-kpi-visible]").forEach((input) => input.addEventListener("change", () => {
+    var kpiId = input.dataset.kpiVisible;
+    var checked = input.checked;
+    var metrics = [...(config.kpiMetrics || [])];
+    var existing = metrics.find((m) => m.id === kpiId);
+    if (existing) existing.visible = checked;
+    else metrics.push({ id: kpiId, visible: checked });
+    config = saveConfig({ ...config, kpiMetrics: metrics });
+    render({ preserveView: true });
+  }));
   document.getElementById("refresh-interval")?.addEventListener("change", (event) => updateConfig({ ...config, refreshInterval: Number(event.target.value) }));
   document.querySelectorAll("[data-module-visible]").forEach((input) => input.addEventListener("change", () => updateConfig({ ...config, modules: config.modules.map((m) => m.id === input.dataset.moduleVisible ? { ...m, visible: input.checked } : m) })));
   document.getElementById("config-save")?.addEventListener("click", () => {
@@ -255,6 +267,31 @@ function bindDrag() {
       const [item] = modules.splice(from, 1); modules.splice(to, 0, item); dragged = ""; dragActive = false; updateConfig({ ...config, modules });
     });
   });
+  // KPI editor drag reorder
+  let kpiDragged = null;
+  var kpiList = document.getElementById("kpi-editor-list");
+  if (kpiList) {
+    kpiList.querySelectorAll(".kpi-check").forEach((item) => {
+      item.draggable = true;
+      item.addEventListener("dragstart", () => { kpiDragged = item; item.classList.add("dragging"); });
+      item.addEventListener("dragend", () => { item.classList.remove("dragging"); kpiDragged = null; });
+      item.addEventListener("dragover", (event) => event.preventDefault());
+      item.addEventListener("drop", (event) => {
+        event.preventDefault();
+        if (!kpiDragged || kpiDragged === item) return;
+        var fromId = kpiDragged.dataset.kpiId;
+        var toId = item.dataset.kpiId;
+        var metrics = [...(config.kpiMetrics || [])];
+        var fromIdx = metrics.findIndex((m) => m.id === fromId);
+        var toIdx = metrics.findIndex((m) => m.id === toId);
+        if (fromIdx < 0 || toIdx < 0) return;
+        var [moved] = metrics.splice(fromIdx, 1);
+        metrics.splice(toIdx, 0, moved);
+        config = saveConfig({ ...config, kpiMetrics: metrics });
+        render({ preserveView: true });
+      });
+    });
+  }
 }
 
 function connectStream() {

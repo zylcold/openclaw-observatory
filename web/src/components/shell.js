@@ -33,7 +33,7 @@ export function shell({ config, data, filters, loading, error, settingsOpen, ses
     <main>
       <div class="page-title"><div><h1>运行概览</h1><p>${filters.range.toUpperCase()}　${filters.instanceId ? '实例 ' + esc(filters.instanceId) + ' · ' : ''}${filters.agentId ? 'Agent ' + esc(filters.agentId) + ' · ' : ''}${fmtLocal(filters.from)} — ${fmtLocal(filters.to)}</p></div><button id="refresh">${loading ? "刷新中…" : "立即刷新"}</button></div>
       ${error ? `<div class="banner error">${esc(error)}</div>` : ""}
-      <section id="dashboard" class="dashboard ${loading && !data ? "loading" : ""}">${data ? visible.map((m) => moduleHTML(m.id, data, config, sessionDetail)).join("") : `<div class="skeleton">正在加载 v0.4 指标…</div>`}</section>
+      <section id="dashboard" class="dashboard ${loading && !data ? "loading" : ""}">${data ? visible.map((m) => moduleHTML(m.id, data, config, sessionDetail, kpiEditorOpen)).join("") : `<div class="skeleton">正在加载 v0.4 指标…</div>`}</section>
     </main>
     <div class="drawer-backdrop ${settingsOpen ? "open" : ""}" id="drawer-backdrop"></div>
     <aside class="drawer ${settingsOpen ? "open" : ""}">
