@@ -14,11 +14,37 @@ export const MODULES = [
   ["cost_trends", "成本趋势与预算"],
 ];
 
+// All available KPI metrics for the overview module.
+// id: unique key, label: display name, defaultVisible: shown by default.
+export const KPI_METRICS = [
+  ["runs", "Agent Runs", true],
+  ["llmRequests", "LLM Requests", true],
+  ["totalTokens", "Token Usage", true],
+  ["toolCalls", "Tool + MCP Calls", true],
+  ["avgLlmLatency", "Avg LLM Latency", true],
+  ["cost", "Total Cost", true],
+  ["diskUsage", "Disk Usage", true],
+  ["inputTokens", "Input Tokens", false],
+  ["outputTokens", "Output Tokens", false],
+  ["cacheReadTokens", "Cache Read Tokens", false],
+  ["cacheWriteTokens", "Cache Write Tokens", false],
+  ["llmErrors", "LLM Errors", false],
+  ["runErrors", "Run Errors", false],
+  ["toolErrors", "Tool Errors", false],
+  ["errorRate", "Error Rate", false],
+  ["toolDuration", "Tool Total Duration", false],
+  ["activeSessions", "Active Sessions", false],
+  ["agentCount", "Agent Count", false],
+  ["maxMemory", "Peak Memory", false],
+  ["avgCpu", "Avg CPU %", false],
+];
+
 export const DEFAULT_CONFIG = {
   version: 1,
   theme: "dark",
   refreshInterval: 15000,
   modules: MODULES.map(([id]) => ({ id, visible: true })),
+  kpiMetrics: KPI_METRICS.map(([id, , vis]) => ({ id, visible: vis })),
   thresholds: { errorRateWarning: 5, errorRateCritical: 15, llmLatencyWarningMs: 5000, llmLatencyCriticalMs: 15000, costBudgetUsd: 0 },
 };
 
@@ -36,12 +62,24 @@ export function normalizeConfig(input = {}) {
     }
   }
   for (const [id] of MODULES) if (!seen.has(id)) modules.push({ id, visible: true });
+  // Normalize KPI metrics
+  const knownKpis = new Map(KPI_METRICS);
+  const seenKpis = new Set();
+  const kpiMetrics = [];
+  for (const item of Array.isArray(input.kpiMetrics) ? input.kpiMetrics : []) {
+    if (knownKpis.has(item?.id) && !seenKpis.has(item.id)) {
+      kpiMetrics.push({ id: item.id, visible: item.visible !== false });
+      seenKpis.add(item.id);
+    }
+  }
+  for (const [id, , vis] of KPI_METRICS) if (!seenKpis.has(id)) kpiMetrics.push({ id, visible: vis });
   const interval = Number(input.refreshInterval);
   return {
     version: 1,
     theme: input.theme === "light" ? "light" : "dark",
     refreshInterval: [5000, 15000, 30000, 60000, 0].includes(interval) ? interval : DEFAULT_CONFIG.refreshInterval,
     modules,
+    kpiMetrics,
     thresholds: { ...DEFAULT_CONFIG.thresholds, ...(input.thresholds || {}) },
   };
 }

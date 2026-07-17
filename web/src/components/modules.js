@@ -1,5 +1,6 @@
 import { comboChart, doughnutChart, lineChart, palette, scatterChart, updateChartData, updateDoughnut, updateScatter, hasChart } from "../charts.js";
 import { bytes, compact, esc, money, ms, num, shortTime, setShortTimeRange } from "../format.js";
+import { KPI_METRICS } from "../config.js";
 
 // Range constants for time-based formatting decisions
 const RANGE_MS = { "1h": 3600000, "6h": 21600000, "24h": 86400000, "7d": 604800000, "30d": 2592000000 };
@@ -23,26 +24,77 @@ const empty = (text = "所选时间范围内暂无数据") => "<div class=\"empt
 const table = (headers, rows) => "<div class=\"table-wrap\"><table><thead><tr>" + headers.map((h) => "<th>" + h + "</th>").join("") + "</tr></thead><tbody>" + rows.join("") + "</tbody></table></div>";
 const chart = (id, tall = false) => "<div class=\"chart" + (tall ? " tall" : "") + "\"><canvas id=\"" + id + "\"></canvas></div>";
 
-function overview(data, config) {
+// Compute all possible KPI values from data.
+// Returns: { id: { value, note, level } }
+function computeKPIs(data, config) {
   const agents = data?.agents || [];
   const sum = (key) => agents.reduce((total, row) => total + Number(row[key] || 0), 0);
   const runs = sum("runs");
-  const errors = sum("runErrors");
-  const errorRate = runs ? 100 * errors / runs : 0;
-  const latency = sum("llmRequests") ? agents.reduce((v, row) => v + Number(row.llmDurationMs || 0), 0) / sum("llmRequests") : 0;
+  const runErrors = sum("runErrors");
+  const errorRateVal = runs ? 100 * runErrors / runs : 0;
+  const llmReqs = sum("llmRequests");
+  const llmErrs = sum("llmErrors");
+  const latency = llmReqs ? agents.reduce((v, row) => v + Number(row.llmDurationMs || 0), 0) / llmReqs : 0;
   const disk = [...(data?.timeseries?.points || [])].reverse().find((point) => Number(point.diskTotalBytes || 0) > 0) || {};
+  const memPoint = [...(data?.timeseries?.points || [])].reverse().find((point) => Number(point.maxMemoryBytes || 0) > 0) || {};
+  const cpuPoint = [...(data?.timeseries?.points || [])].reverse().find((point) => Number(point.averageCpuPercent || 0) > 0) || {};
+  const status = data?.status || {};
   const level = (value, warning, critical) => value >= critical ? "critical" : value >= warning ? "warning" : "";
   const t = config.thresholds;
-  const items = [
-    ["Agent Runs", compact(runs), errors + " failed", level(errorRate, t.errorRateWarning, t.errorRateCritical)],
-    ["LLM Requests", compact(sum("llmRequests")), errorRate.toFixed(1) + "% run errors", level(errorRate, t.errorRateWarning, t.errorRateCritical)],
-    ["Token", compact(sum("totalTokens")), compact(sum("cacheReadTokens")) + " cache read", ""],
-    ["Tool + MCP", compact(sum("toolCalls")), sum("toolErrors") + " errors", ""],
-    ["Avg LLM Latency", ms(latency), agents.length + " agents", level(latency, t.llmLatencyWarningMs, t.llmLatencyCriticalMs)],
-    ["Cost", money(sum("costUsd")), "reported cost", ""],
-    ["Disk Usage", Number(disk.diskUsedPercent || 0).toFixed(1) + "%", bytes(disk.diskAvailableBytes) + " available", ""],
-  ];
-  return "<div class=\"kpi-grid\">" + items.map((item) => "<div class=\"kpi " + item[3] + "\"><span>" + item[0] + "</span><strong>" + item[1] + "</strong><small>" + item[2] + "</small></div>").join("") + "</div>";
+  return {
+    runs: { value: compact(runs), note: runErrors + " failed", level: level(errorRateVal, t.errorRateWarning, t.errorRateCritical) },
+    llmRequests: { value: compact(llmReqs), note: llmErrs + " LLM errors", level: "" },
+    totalTokens: { value: compact(sum("totalTokens")), note: compact(sum("cacheReadTokens")) + " cache read", level: "" },
+    toolCalls: { value: compact(sum("toolCalls")), note: sum("toolErrors") + " errors", level: "" },
+    avgLlmLatency: { value: ms(latency), note: agents.length + " agents", level: level(latency, t.llmLatencyWarningMs, t.llmLatencyCriticalMs) },
+    cost: { value: money(sum("costUsd")), note: "reported cost", level: "" },
+    diskUsage: { value: Number(disk.diskUsedPercent || 0).toFixed(1) + "%", note: bytes(disk.diskAvailableBytes) + " available", level: "" },
+    inputTokens: { value: compact(sum("inputTokens")), note: "prompt tokens", level: "" },
+    outputTokens: { value: compact(sum("outputTokens")), note: "completion tokens", level: "" },
+    cacheReadTokens: { value: compact(sum("cacheReadTokens")), note: "cache hits", level: "" },
+    cacheWriteTokens: { value: compact(sum("cacheWriteTokens")), note: "cache writes", level: "" },
+    llmErrors: { value: num(llmErrs), note: llmReqs ? (100 * llmErrs / llmReqs).toFixed(1) + "% error rate" : "", level: level(llmReqs ? 100 * llmErrs / llmReqs : 0, t.errorRateWarning, t.errorRateCritical) },
+    runErrors: { value: num(runErrors), note: runs ? errorRateVal.toFixed(1) + "% error rate" : "", level: level(errorRateVal, t.errorRateWarning, t.errorRateCritical) },
+    toolErrors: { value: num(sum("toolErrors")), note: sum("toolCalls") + " total calls", level: "" },
+    errorRate: { value: errorRateVal.toFixed(1) + "%", note: runErrors + " of " + runs + " runs", level: level(errorRateVal, t.errorRateWarning, t.errorRateCritical) },
+    toolDuration: { value: ms(sum("toolDurationMs")), note: "across all tools", level: "" },
+    activeSessions: { value: num(status.sessionsActive || 0), note: "currently active", level: "" },
+    agentCount: { value: num(agents.length), note: agents.map((a) => esc(a.agentId)).slice(0, 5).join(", ") + (agents.length > 5 ? "…" : ""), level: "" },
+    maxMemory: { value: bytes(memPoint.maxMemoryBytes || 0), note: "peak resident", level: "" },
+    avgCpu: { value: Number(cpuPoint.averageCpuPercent || 0).toFixed(1) + "%", note: "avg CPU", level: "" },
+  };
+}
+
+function overview(data, config, kpiEditorOpen) {
+  const kpis = computeKPIs(data, config);
+  const kpiNames = new Map(KPI_METRICS);
+  const visibleMetrics = (config.kpiMetrics || []).filter((m) => m.visible);
+  // Ensure at least the visible ones are shown even if config is stale
+  if (!visibleMetrics.length) return "<div class=\"empty\">没有选中的 KPI 指标，点击编辑按钮添加。</div>";
+  var cards = visibleMetrics.map((m) => {
+    var kpi = kpis[m.id] || { value: "—", note: "", level: "" };
+    return "<div class=\"kpi " + kpi.level + "\" data-kpi-id=\"" + m.id + "\"><span>" + esc(kpiNames.get(m.id) || m.id) + "</span><strong>" + kpi.value + "</strong><small>" + esc(kpi.note) + "</small></div>";
+  });
+  var html = "<div class=\"kpi-grid\" style=\"--kpi-count:" + visibleMetrics.length + "\">" + cards.join("") + "</div>";
+  if (kpiEditorOpen) html += kpiEditorHTML(config, kpiNames);
+  return html;
+}
+
+function kpiEditorHTML(config, kpiNames) {
+  const metrics = config.kpiMetrics || [];
+  const visibleCount = metrics.filter((m) => m.visible).length;
+  var rows = metrics.map((m) => {
+    var name = esc(kpiNames.get(m.id) || m.id);
+    return '<label class="kpi-check" data-kpi-id="' + m.id + '"><input type="checkbox" data-kpi-visible="' + m.id + '" ' + (m.visible ? 'checked' : '') + '><span class="kpi-drag" title="拖拽排序">⠿</span>' + name + '</label>';
+  });
+  var hidden = KPI_METRICS.filter(([id]) => !metrics.some((m) => m.id === id));
+  if (hidden.length) {
+    rows.push('<div class="kpi-divider"></div>');
+    hidden.forEach(([id, label]) => {
+      rows.push('<label class="kpi-check" data-kpi-id="' + id + '"><input type="checkbox" data-kpi-visible="' + id + '"><span class="kpi-drag" title="拖拽排序">⠿</span>' + esc(label) + '</label>');
+    });
+  }
+  return '<div class="kpi-editor"><div class="kpi-editor-header"><span>指标管理</span><small>' + visibleCount + ' 个展示中 · 点击勾选 / 拖拽排序</small></div><div class="kpi-editor-list" id="kpi-editor-list">' + rows.join('') + '</div></div>';
 }
 
 function agentTable(data) {
@@ -208,9 +260,9 @@ function toolRanking(tools) {
   return "<div class=\"tool-ranking\">" + tools.map((tool) => "<div title=\"" + esc(tool.source) + ":" + esc(tool.tool) + " · " + num(tool.calls) + "\"><span>" + esc(tool.source) + ":" + esc(tool.tool) + "</span><i><b style=\"width:" + (100 * Number(tool.calls || 0) / max) + "%\"></b></i><strong>" + num(tool.calls) + "</strong></div>").join("") + "</div>";
 }
 
-export function moduleHTML(id, data, config, sessionDetail) {
+export function moduleHTML(id, data, config, sessionDetail, kpiEditorOpen) {
   var body = "";
-  if (id === "overview") body = overview(data, config);
+  if (id === "overview") body = overview(data, config, kpiEditorOpen);
   if (id === "resources") body = chart("resources-chart");
   if (id === "llm_combo") body = chart("llm-combo-chart");
   if (id === "model_tokens") body = chart("model-token-chart", true);
@@ -223,7 +275,10 @@ export function moduleHTML(id, data, config, sessionDetail) {
   if (id === "errors_cost") body = errorsCost(data);
   if (id === "activity") body = activity(data);
   if (id === "cost_trends") body = costTrendsHTML(data, config);
-  return "<article class=\"panel module-" + id + "\" draggable=\"true\" data-module=\"" + id + "\"><header><div><span class=\"drag\" title=\"Drag to reorder\">⠿</span><h2>" + names[id] + "</h2></div><small>" + (id === "overview" ? "Auto-highlight thresholds" : "") + "</small></header>" + body + "</article>";
+  var editBtn = id === "overview"
+    ? "<button class=\"kpi-edit-btn" + (kpiEditorOpen ? " active" : "") + "\" id=\"kpi-edit-toggle\" title=\"编辑指标\">" + (kpiEditorOpen ? "✓" : "✎") + "</button>"
+    : "";
+  return "<article class=\"panel module-" + id + "\" draggable=\"true\" data-module=\"" + id + "\"><header><div><span class=\"drag\" title=\"Drag to reorder\">⠿</span><h2>" + names[id] + "</h2></div>" + editBtn + "</header>" + body + "</article>";
 }
 
 export function paintCharts(data) {
@@ -364,51 +419,19 @@ export function updateCharts(data) {
  * Update KPI cards and tables in-place without full re-render.
  */
 export function updateNonChartDOM(appEl, data, config) {
-  var agents = data?.agents || [];
-  var sum = (key) => agents.reduce((total, row) => total + Number(row[key] || 0), 0);
-  var runs = sum("runs");
-  var errors = sum("runErrors");
-  var errorRate = runs ? 100 * errors / runs : 0;
-  var latency = sum("llmRequests") ? agents.reduce((v, row) => v + Number(row.llmDurationMs || 0), 0) / sum("llmRequests") : 0;
-  var disk = [...(data?.timeseries?.points || [])].reverse().find((point) => Number(point.diskTotalBytes || 0) > 0) || {};
-
-  // Update page title time range
-  var titleEl = appEl.querySelector(".page-title p");
-  if (titleEl) {
-    // Read current filters from the active buttons/selects
-    var activeRange = appEl.querySelector(".ranges button.active");
-    var rangeText = activeRange ? activeRange.dataset.range : "";
-    var instSel = appEl.querySelector("#instance-filter");
-    var agentSel = appEl.querySelector("#agent-filter");
-    var parts = [rangeText];
-    if (instSel && instSel.value) parts.push("实例: " + instSel.value);
-    if (agentSel && agentSel.value) parts.push("Agent: " + agentSel.value);
-    // We don't have filters.from/to here, so keep title text as-is for incremental updates
-  }
-
-  var kpiValues = [
-    compact(runs),
-    compact(sum("llmRequests")),
-    compact(sum("totalTokens")),
-    compact(sum("toolCalls")),
-    ms(latency),
-    money(sum("costUsd")),
-    Number(disk.diskUsedPercent || 0).toFixed(1) + "%",
-  ];
-  var kpiCards = appEl.querySelectorAll(".kpi strong");
-  kpiCards.forEach((el, i) => { if (kpiValues[i] !== undefined) el.textContent = kpiValues[i]; });
-
-  var kpiNotes = [
-    errors + " failed",
-    errorRate.toFixed(1) + "% run errors",
-    compact(sum("cacheReadTokens")) + " cache read",
-    sum("toolErrors") + " errors",
-    agents.length + " agents",
-    "reported cost",
-    bytes(disk.diskAvailableBytes) + " available",
-  ];
-  var noteEls = appEl.querySelectorAll(".kpi small");
-  noteEls.forEach((el, i) => { if (kpiNotes[i] !== undefined) el.textContent = kpiNotes[i]; });
+  var kpis = computeKPIs(data, config);
+  var kpiNames = new Map(KPI_METRICS);
+  var cards = appEl.querySelectorAll(".kpi[data-kpi-id]");
+  cards.forEach((card) => {
+    var id = card.dataset.kpiId;
+    var kpi = kpis[id];
+    if (!kpi) return;
+    var strong = card.querySelector("strong");
+    var small = card.querySelector("small");
+    if (strong) strong.textContent = kpi.value;
+    if (small) small.textContent = kpi.note;
+    card.className = "kpi " + (kpi.level || "");
+  });
 }
 
 /**
