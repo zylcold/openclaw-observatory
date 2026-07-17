@@ -109,21 +109,26 @@ function render({ preserveView = false, deferWhileInteracting = false } = {}) {
     markInteraction();
     return;
   }
-  deferredRender = false;
-  const view = preserveView ? captureView() : null;
-  destroyCharts();
-  setChartAnimation(!preserveView && !hasRenderedData);
-  setRange(filters.range);
-  document.documentElement.dataset.theme = config.theme;
-  app.innerHTML = shell({ config, data, filters, loading, error, settingsOpen, sessionDetail, connectionLost, dataStale, kpiEditorOpen });
-  const interval = document.getElementById("refresh-interval");
-  if (interval) interval.value = String(config.refreshInterval);
-  bind();
-  if (data) requestAnimationFrame(() => {
-    paintCharts(data);
-    restoreView(view);
-    hasRenderedData = true;
-  });
+  try {
+    deferredRender = false;
+    const view = preserveView ? captureView() : null;
+    destroyCharts();
+    setChartAnimation(!preserveView && !hasRenderedData);
+    setRange(filters.range);
+    document.documentElement.dataset.theme = config.theme;
+    app.innerHTML = shell({ config, data, filters, loading, error, settingsOpen, sessionDetail, connectionLost, dataStale, kpiEditorOpen });
+    const interval = document.getElementById("refresh-interval");
+    if (interval) interval.value = String(config.refreshInterval);
+    bind();
+    if (data) requestAnimationFrame(() => {
+      try { paintCharts(data); } catch(e) { console.error("paintCharts error:", e); }
+      restoreView(view);
+      hasRenderedData = true;
+    });
+  } catch(e) {
+    console.error("render error:", e);
+    app.innerHTML = '<div style="padding:40px;color:#ff647c;font-family:monospace;white-space:pre-wrap">Render Error: ' + (e.stack || e.message || String(e)) + '</div>';
+  }
 }
 
 /**

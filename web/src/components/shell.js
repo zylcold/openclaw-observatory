@@ -9,7 +9,7 @@ function fmtLocal(iso) {
   return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-export function shell({ config, data, filters, loading, error, settingsOpen, sessionDetail, connectionLost, dataStale }) {
+export function shell({ config, data, filters, loading, error, settingsOpen, sessionDetail, connectionLost, dataStale, kpiEditorOpen }) {
   const instances = data?.status?.instances || [];
   const agents = data?.agents || [];
   const gatewayUp = instances.some((x) => x.status === "up");
