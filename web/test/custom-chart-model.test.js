@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 
 import { normalizeConfig } from "../src/config.js";
 import {
-  DEFAULT_CUSTOM_CHARTS, buildCustomChartSeries, normalizeCustomCharts, suitableDimensionGroups,
+  CHART_TYPES, CHART_TYPE_GROUPS, DEFAULT_CUSTOM_CHARTS, buildCustomChartSeries,
+  chartTypeDimensionLimit, chartTypeMetrics, normalizeCustomCharts, suitableDimensionGroups,
   suitableDimensionGroupsForDomain,
 } from "../src/custom-chart-model.js";
 
@@ -55,4 +56,46 @@ test("chart choices expose only suitable dimension groups", () => {
   assert.deepEqual(suitableDimensionGroups("line").map((group) => group.id), ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"]);
   assert.deepEqual(suitableDimensionGroups("doughnut").map((group) => group.id), ["agents", "sessions", "models", "tools", "errors"]);
   assert.deepEqual(suitableDimensionGroupsForDomain("line", "tools").map((group) => group.id), ["tools"]);
+});
+
+test("chart library exposes 18 types in four semantic groups", () => {
+  assert.equal(CHART_TYPES.length, 18);
+  assert.deepEqual(CHART_TYPE_GROUPS.map((group) => group.id), ["trend", "compare", "distribution", "relationship"]);
+  assert.ok(["stepLine", "cumulativeLine", "stackedArea", "stackedBar", "combo", "waterfall", "histogram", "gauge", "scatter", "bubble"]
+    .every((id) => CHART_TYPES.some((item) => item.id === id)));
+});
+
+test("chart-specific rules constrain dimensions and metrics", () => {
+  assert.equal(chartTypeDimensionLimit("gauge"), 1);
+  assert.deepEqual(chartTypeMetrics("models", "gauge").map((item) => item.id), ["errorRate"]);
+  assert.ok(chartTypeMetrics("models", "scatter").length > 2);
+  assert.deepEqual(suitableDimensionGroupsForDomain("bubble", "errors"), []);
+});
+
+test("dual and triple metric charts normalize and build relationship points", () => {
+  const charts = normalizeCustomCharts([
+    { id: "missing-y", chartType: "scatter", dataset: "models", dimensions: ["model"], metric: "costUsd" },
+    { id: "scatter", chartType: "scatter", dataset: "models", dimensions: ["model"], metric: "costUsd", secondaryMetric: "averageDurationMs" },
+    { id: "bubble", chartType: "bubble", dataset: "models", dimensions: ["model"], metric: "costUsd", secondaryMetric: "averageDurationMs", sizeMetric: "requests" },
+  ]);
+  assert.equal(charts.length, 2);
+  assert.equal(charts[1].sizeMetric, "requests");
+  const series = buildCustomChartSeries({ models: [
+    { model: "gpt", costUsd: 2, averageDurationMs: 500, requests: 9 },
+    { model: "claude", costUsd: 3, averageDurationMs: 800, requests: 16 },
+  ] }, charts[1]);
+  assert.deepEqual(series.datasets[0].data.map(({ x, y, category }) => ({ x, y, category })), [
+    { x: 3, y: 800, category: "claude" },
+    { x: 2, y: 500, category: "gpt" },
+  ]);
+  assert.ok(series.datasets[0].data.every((point) => point.r >= 4));
+});
+
+test("gauge rejects non-percentage metrics", () => {
+  const charts = normalizeCustomCharts([
+    { id: "bad", chartType: "gauge", dataset: "models", dimensions: ["model"], metric: "costUsd" },
+    { id: "ok", chartType: "gauge", dataset: "models", dimensions: ["model", "provider"], metric: "errorRate" },
+  ]);
+  assert.equal(charts.length, 1);
+  assert.deepEqual(charts[0].dimensions, ["model"]);
 });

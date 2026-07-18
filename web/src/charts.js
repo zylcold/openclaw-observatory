@@ -1,11 +1,11 @@
 import {
-  Chart, ArcElement, BarController, BarElement, CategoryScale, DoughnutController, Filler,
+  Chart, ArcElement, BarController, BarElement, BubbleController, CategoryScale, DoughnutController, Filler,
   Legend, LinearScale, LineController, LineElement, PieController, PointElement,
   PolarAreaController, RadarController, RadialLinearScale, ScatterController, Tooltip,
 } from "chart.js";
 
 Chart.register(
-  ArcElement, BarController, BarElement, CategoryScale, DoughnutController, Filler, Legend,
+  ArcElement, BarController, BarElement, BubbleController, CategoryScale, DoughnutController, Filler, Legend,
   LinearScale, LineController, LineElement, PieController, PointElement, PolarAreaController,
   RadarController, RadialLinearScale, ScatterController, Tooltip,
 );
@@ -55,7 +55,11 @@ export const comboChart = (id, labels, datasets, options = {}) => make(id, { typ
 export const doughnutChart = (id, labels, values) => make(id, { type: "doughnut", data: { labels, datasets: [{ data: values, backgroundColor: palette, borderWidth: 0 }] }, options: { cutout: "68%", plugins: { legend: { position: "bottom" } } } });
 export const scatterChart = (id, datasets) => make(id, { type: "scatter", data: { datasets }, options: { parsing: false, scales: { x: { title: { display: true, text: "Token" } }, y: { title: { display: true, text: "延迟 ms" } } } } });
 export const customChart = (id, requestedType, data, options = {}) => {
-  const type = requestedType === "area" ? "line" : requestedType === "horizontalBar" ? "bar" : requestedType;
+  const type = ["area", "stepLine", "cumulativeLine", "stackedArea"].includes(requestedType)
+    ? "line"
+    : ["horizontalBar", "stackedBar", "combo", "waterfall", "histogram"].includes(requestedType)
+      ? "bar"
+      : requestedType === "gauge" ? "doughnut" : requestedType;
   return make(id, { type, data, options });
 };
 

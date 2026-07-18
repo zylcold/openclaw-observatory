@@ -2,7 +2,10 @@ import "./styles.css";
 import { loadDashboard, loadSession } from "./api.js";
 import { loadConfig, resetConfig, saveConfig } from "./config.js";
 import { destroyCharts, setChartAnimation } from "./charts.js";
-import { defaultCustomChartTitle, dimensionGroupById } from "./custom-chart-model.js";
+import {
+  chartTypeDimensionLimit, chartTypeMetricSlots, chartTypeMetrics,
+  defaultCustomChartTitle, dimensionGroupById,
+} from "./custom-chart-model.js";
 import {
   chartsForDomain, domainFilterOptions, filterDashboardData, normalizeDomain,
 } from "./observability-model.js";
@@ -23,7 +26,7 @@ let loading = false;
 let error = "";
 let settingsOpen = false;
 let kpiEditorOpen = false;
-let customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", title: "", width: "half" };
+let customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", secondaryMetric: "", sizeMetric: "", title: "", width: "half" };
 let refreshTimer = null;
 let streamTimer = null;
 let interactionTimer = null;
@@ -232,7 +235,7 @@ function updateConfig(next) {
 function bind() {
   document.querySelectorAll("[data-observability-domain]").forEach((button) => button.addEventListener("click", () => {
     activeDomain = normalizeDomain(button.dataset.observabilityDomain);
-    customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", title: "", width: "half" };
+    customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", secondaryMetric: "", sizeMetric: "", title: "", width: "half" };
     writeURLState();
     render({ preserveView: false });
   }));
@@ -270,22 +273,22 @@ function bind() {
   document.getElementById("drawer-backdrop")?.addEventListener("click", () => { settingsOpen = false; render(); });
   document.getElementById("custom-chart-create")?.addEventListener("click", () => {
     settingsOpen = false;
-    customBuilder = { open: true, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", title: "", width: "half" };
+    customBuilder = { open: true, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", secondaryMetric: "", sizeMetric: "", title: "", width: "half" };
     render({ preserveView: true });
   });
   const closeCustomBuilder = () => {
-    customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", title: "", width: "half" };
+    customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", secondaryMetric: "", sizeMetric: "", title: "", width: "half" };
     render({ preserveView: true });
   };
   document.getElementById("custom-builder-close")?.addEventListener("click", closeCustomBuilder);
   document.getElementById("custom-builder-cancel")?.addEventListener("click", closeCustomBuilder);
   document.getElementById("custom-builder-backdrop")?.addEventListener("click", closeCustomBuilder);
   document.querySelectorAll("[data-custom-chart-type]").forEach((button) => button.addEventListener("click", () => {
-    customBuilder = { ...customBuilder, step: 2, chartType: button.dataset.customChartType, dataset: "", dimensions: [], metric: "", title: "" };
+    customBuilder = { ...customBuilder, step: 2, chartType: button.dataset.customChartType, dataset: "", dimensions: [], metric: "", secondaryMetric: "", sizeMetric: "", title: "" };
     render({ preserveView: true });
   }));
   document.getElementById("custom-builder-back")?.addEventListener("click", () => {
-    customBuilder = { ...customBuilder, step: 1, dataset: "", dimensions: [], metric: "", title: "" };
+    customBuilder = { ...customBuilder, step: 1, dataset: "", dimensions: [], metric: "", secondaryMetric: "", sizeMetric: "", title: "" };
     render({ preserveView: true });
   });
   document.querySelectorAll("[data-custom-dimension]").forEach((button) => button.addEventListener("click", () => {
@@ -293,24 +296,56 @@ function bind() {
     const dimension = button.dataset.customDimension;
     const sameGroup = customBuilder.dataset === dataset;
     let dimensions = sameGroup ? [...customBuilder.dimensions] : [];
+    const dimensionLimit = chartTypeDimensionLimit(customBuilder.chartType);
     if (dimensions.includes(dimension)) {
       if (dimensions.length > 1) dimensions = dimensions.filter((id) => id !== dimension);
-    } else if (dimensions.length < 2) {
+    } else if (dimensions.length < dimensionLimit) {
       dimensions.push(dimension);
     }
     const group = dimensionGroupById(dataset);
-    const metric = sameGroup && group?.metrics.some((item) => item.id === customBuilder.metric)
+    const metrics = chartTypeMetrics(dataset, customBuilder.chartType);
+    const metric = sameGroup && metrics.some((item) => item.id === customBuilder.metric)
       ? customBuilder.metric
-      : group?.metrics[0]?.id || "";
-    customBuilder = { ...customBuilder, dataset, dimensions, metric, title: "" };
+      : metrics[0]?.id || "";
+    const slots = Math.min(chartTypeMetricSlots(customBuilder.chartType), Math.max(1, metrics.length));
+    const secondaryMetric = slots >= 2 && sameGroup && metrics.some((item) => item.id === customBuilder.secondaryMetric) && customBuilder.secondaryMetric !== metric
+      ? customBuilder.secondaryMetric
+      : slots >= 2 ? metrics.find((item) => item.id !== metric)?.id || "" : "";
+    const sizeMetric = slots >= 3 && sameGroup && metrics.some((item) => item.id === customBuilder.sizeMetric) && ![metric, secondaryMetric].includes(customBuilder.sizeMetric)
+      ? customBuilder.sizeMetric
+      : slots >= 3 ? metrics.find((item) => ![metric, secondaryMetric].includes(item.id))?.id || "" : "";
+    customBuilder = { ...customBuilder, dataset, dimensions, metric, secondaryMetric, sizeMetric, title: "" };
     render({ preserveView: true });
   }));
   document.getElementById("custom-metric")?.addEventListener("change", (event) => {
-    customBuilder = { ...customBuilder, metric: event.target.value, title: "" };
+    const metrics = chartTypeMetrics(customBuilder.dataset, customBuilder.chartType);
+    const metric = event.target.value;
+    const secondaryMetric = customBuilder.secondaryMetric !== metric
+      ? customBuilder.secondaryMetric
+      : metrics.find((item) => item.id !== metric)?.id || "";
+    const sizeMetric = ![metric, secondaryMetric].includes(customBuilder.sizeMetric)
+      ? customBuilder.sizeMetric
+      : metrics.find((item) => ![metric, secondaryMetric].includes(item.id))?.id || secondaryMetric;
+    customBuilder = { ...customBuilder, metric, secondaryMetric, sizeMetric, title: "" };
+    render({ preserveView: true });
+  });
+  document.getElementById("custom-secondary-metric")?.addEventListener("change", (event) => {
+    const metrics = chartTypeMetrics(customBuilder.dataset, customBuilder.chartType);
+    const secondaryMetric = event.target.value;
+    const sizeMetric = ![customBuilder.metric, secondaryMetric].includes(customBuilder.sizeMetric)
+      ? customBuilder.sizeMetric
+      : metrics.find((item) => ![customBuilder.metric, secondaryMetric].includes(item.id))?.id || secondaryMetric;
+    customBuilder = { ...customBuilder, secondaryMetric, sizeMetric, title: "" };
+    render({ preserveView: true });
+  });
+  document.getElementById("custom-size-metric")?.addEventListener("change", (event) => {
+    customBuilder = { ...customBuilder, sizeMetric: event.target.value, title: "" };
     render({ preserveView: true });
   });
   document.getElementById("custom-chart-add")?.addEventListener("click", () => {
     const metric = document.getElementById("custom-metric")?.value || customBuilder.metric;
+    const secondaryMetric = document.getElementById("custom-secondary-metric")?.value || customBuilder.secondaryMetric;
+    const sizeMetric = document.getElementById("custom-size-metric")?.value || customBuilder.sizeMetric;
     const fallbackTitle = defaultCustomChartTitle(customBuilder.dataset, customBuilder.dimensions, metric);
     const title = document.getElementById("custom-chart-title")?.value.trim() || fallbackTitle;
     const width = document.getElementById("custom-chart-width")?.value === "full" ? "full" : "half";
@@ -319,10 +354,13 @@ function bind() {
       ...config,
       customCharts: [...config.customCharts, {
         id, title, chartType: customBuilder.chartType, dataset: customBuilder.dataset,
-        dimensions: customBuilder.dimensions, metric, width, domain: activeDomain,
+        dimensions: customBuilder.dimensions, metric,
+        ...(secondaryMetric ? { secondaryMetric } : {}),
+        ...(sizeMetric ? { sizeMetric } : {}),
+        width, domain: activeDomain,
       }],
     });
-    customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", title: "", width: "half" };
+    customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", secondaryMetric: "", sizeMetric: "", title: "", width: "half" };
     render({ preserveView: true });
   });
   document.querySelectorAll("[data-custom-chart-delete]").forEach((button) => button.addEventListener("click", () => {

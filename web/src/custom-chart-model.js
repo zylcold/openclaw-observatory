@@ -7,14 +7,31 @@ const metric = (id, label, value, unit = "") => ({ id, label, value, unit });
 const dimension = (id, label, value) => ({ id, label, value });
 
 export const CHART_TYPES = [
-  { id: "line", label: "折线图", description: "观察连续变化与趋势", datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
-  { id: "area", label: "面积图", description: "突出趋势与累计量级", datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
-  { id: "bar", label: "柱状图", description: "比较多个分类", datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
-  { id: "horizontalBar", label: "横向条形图", description: "适合较长分类名称", datasets: ["agents", "sessions", "models", "tools", "errors"] },
-  { id: "doughnut", label: "环形图", description: "查看构成与占比", datasets: ["agents", "sessions", "models", "tools", "errors"] },
-  { id: "pie", label: "饼图", description: "展示分类分布", datasets: ["agents", "sessions", "models", "tools", "errors"] },
-  { id: "polarArea", label: "极区图", description: "对比分类规模", datasets: ["agents", "sessions", "models", "tools", "errors"] },
-  { id: "radar", label: "雷达图", description: "查看多分类轮廓", datasets: ["agents", "sessions", "models", "tools", "errors"] },
+  { id: "line", group: "trend", label: "折线图", description: "观察连续变化与趋势", datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+  { id: "area", group: "trend", label: "面积图", description: "突出趋势与量级", datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+  { id: "stepLine", group: "trend", label: "阶梯线图", description: "观察状态或阶段变化", datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+  { id: "cumulativeLine", group: "trend", label: "累计趋势图", description: "查看累计增长过程", datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+  { id: "stackedArea", group: "trend", label: "堆叠面积图", description: "比较构成随时间变化", datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+  { id: "bar", group: "compare", label: "柱状图", description: "比较多个分类", datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+  { id: "horizontalBar", group: "compare", label: "横向条形图", description: "适合较长分类名称", datasets: ["agents", "sessions", "models", "tools", "errors"] },
+  { id: "stackedBar", group: "compare", label: "堆叠柱状图", description: "比较总量与内部构成", datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+  { id: "combo", group: "compare", label: "柱线组合图", description: "同时观察两个指标", metricSlots: 2, datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+  { id: "waterfall", group: "compare", label: "瀑布图", description: "展示逐项增量与累计", maxDimensions: 1, datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+  { id: "doughnut", group: "distribution", label: "环形图", description: "查看构成与占比", datasets: ["agents", "sessions", "models", "tools", "errors"] },
+  { id: "pie", group: "distribution", label: "饼图", description: "展示分类分布", datasets: ["agents", "sessions", "models", "tools", "errors"] },
+  { id: "polarArea", group: "distribution", label: "极区图", description: "对比分类规模", datasets: ["agents", "sessions", "models", "tools", "errors"] },
+  { id: "radar", group: "distribution", label: "雷达图", description: "查看多分类轮廓", datasets: ["agents", "sessions", "models", "tools", "errors"] },
+  { id: "histogram", group: "distribution", label: "直方图", description: "查看指标数值分布", datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+  { id: "gauge", group: "distribution", label: "仪表盘", description: "展示百分比健康度", allowedUnits: ["%"], maxDimensions: 1, datasets: ["overview", "agents", "models", "tools", "infrastructure"] },
+  { id: "scatter", group: "relationship", label: "散点图", description: "分析两个指标的关联", metricSlots: 2, datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+  { id: "bubble", group: "relationship", label: "气泡图", description: "用气泡大小表达第三指标", metricSlots: 3, datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+];
+
+export const CHART_TYPE_GROUPS = [
+  { id: "trend", label: "趋势", description: "时间变化、累计与构成" },
+  { id: "compare", label: "比较", description: "分类对比与增量分析" },
+  { id: "distribution", label: "分布", description: "占比、轮廓与数值分布" },
+  { id: "relationship", label: "关联", description: "双指标和三指标关系" },
 ];
 
 export const DIMENSION_GROUPS = [
@@ -213,12 +230,30 @@ export function metricById(groupId, metricId) {
 }
 
 export function suitableDimensionGroups(chartTypeId) {
-  const allowed = new Set(chartTypeById(chartTypeId)?.datasets || []);
-  return DIMENSION_GROUPS.filter((group) => allowed.has(group.id));
+  const chartType = chartTypeById(chartTypeId);
+  const allowed = new Set(chartType?.datasets || []);
+  const requiredMetrics = chartTypeMetricSlots(chartTypeId);
+  return DIMENSION_GROUPS.filter((group) => allowed.has(group.id) && chartTypeMetrics(group.id, chartTypeId).length >= requiredMetrics);
 }
 
 export function suitableDimensionGroupsForDomain(chartTypeId, domain) {
   return suitableDimensionGroups(chartTypeId).filter((group) => group.domain === domain);
+}
+
+export function chartTypeMetrics(groupId, chartTypeId) {
+  const group = dimensionGroupById(groupId);
+  const chartType = chartTypeById(chartTypeId);
+  if (!group || !chartType) return [];
+  const units = chartType.allowedUnits;
+  return units?.length ? group.metrics.filter((item) => units.includes(item.unit)) : group.metrics;
+}
+
+export function chartTypeMetricSlots(chartTypeId) {
+  return Math.max(1, Number(chartTypeById(chartTypeId)?.metricSlots || 1));
+}
+
+export function chartTypeDimensionLimit(chartTypeId) {
+  return Math.max(1, Math.min(2, Number(chartTypeById(chartTypeId)?.maxDimensions || 2)));
 }
 
 export function defaultCustomChartTitle(groupId, dimensionIds, metricId) {
@@ -238,8 +273,20 @@ export function normalizeCustomCharts(input, { useDefaults = false } = {}) {
     if (!chartType || !group || !chartType.datasets.includes(group.id)) continue;
     const dimensions = [...new Set(Array.isArray(item.dimensions) ? item.dimensions : [item.dimension])]
       .filter((id) => dimensionById(group.id, id))
-      .slice(0, 2);
-    if (!dimensions.length || !metricById(group.id, item.metric)) continue;
+      .slice(0, chartTypeDimensionLimit(chartType.id));
+    const allowedMetrics = chartTypeMetrics(group.id, chartType.id);
+    const selectedMetric = allowedMetrics.find((entry) => entry.id === item.metric);
+    if (!dimensions.length || !selectedMetric) continue;
+    const slots = chartTypeMetricSlots(chartType.id);
+    const secondaryMetric = slots >= 2
+      ? allowedMetrics.find((entry) => entry.id === item.secondaryMetric && entry.id !== selectedMetric.id)
+      : undefined;
+    if (slots >= 2 && !secondaryMetric) continue;
+    const sizeMetric = slots >= 3
+      ? allowedMetrics.find((entry) => entry.id === item.sizeMetric && ![selectedMetric.id, secondaryMetric.id].includes(entry.id))
+        || allowedMetrics.find((entry) => ![selectedMetric.id, secondaryMetric.id].includes(entry.id))
+      : undefined;
+    if (slots >= 3 && !sizeMetric) continue;
     const fallbackId = `chart-${index + 1}`;
     let id = String(item.id || fallbackId).replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 64) || fallbackId;
     while (seen.has(id)) id = `${id}-${index + 1}`;
@@ -253,6 +300,8 @@ export function normalizeCustomCharts(input, { useDefaults = false } = {}) {
       dataset: group.id,
       dimensions,
       metric: item.metric,
+      ...(secondaryMetric ? { secondaryMetric: secondaryMetric.id } : {}),
+      ...(sizeMetric ? { sizeMetric: sizeMetric.id } : {}),
       width: item.width === "full" ? "full" : "half",
       domain: String(item.domain || group.domain || "overview"),
     });
@@ -272,6 +321,8 @@ export function buildCustomChartSeries(data, chart) {
   const group = dimensionGroupById(chart?.dataset);
   const selectedMetric = metricById(chart?.dataset, chart?.metric);
   const dimensions = (chart?.dimensions || []).map((id) => dimensionById(chart.dataset, id)).filter(Boolean);
+  const secondaryMetric = metricById(chart?.dataset, chart?.secondaryMetric);
+  const sizeMetric = metricById(chart?.dataset, chart?.sizeMetric);
   if (!group || !selectedMetric || !dimensions.length) return { labels: [], datasets: [], label: "", unit: "" };
   const categoryDimension = dimensions[0];
   const seriesDimension = dimensions[1];
@@ -285,7 +336,11 @@ export function buildCustomChartSeries(data, chart) {
     const value = number(selectedMetric.value(row));
     if (!categoryValues.has(category)) categoryValues.set(category, new Map());
     const values = categoryValues.get(category);
-    values.set(series, number(values.get(series)) + value);
+    const current = values.get(series) || { value: 0, secondary: 0, size: 0 };
+    current.value += value;
+    if (secondaryMetric) current.secondary += number(secondaryMetric.value(row));
+    if (sizeMetric) current.size += number(sizeMetric.value(row));
+    values.set(series, current);
     totals.set(category, number(totals.get(category)) + value);
   }
 
@@ -298,18 +353,37 @@ export function buildCustomChartSeries(data, chart) {
     ? [...new Set(categories.flatMap((category) => [...categoryValues.get(category).keys()]))]
     : [selectedMetric.label];
   seriesNames.sort((a, b) => {
-    const total = (name) => categories.reduce((sum, category) => sum + number(categoryValues.get(category).get(name)), 0);
+    const total = (name) => categories.reduce((sum, category) => sum + number(categoryValues.get(category).get(name)?.value), 0);
     return total(b) - total(a);
   });
   seriesNames = seriesNames.slice(0, 8);
 
+  const labels = categories.map((category) => formatCategory(categoryDimension.id, category));
+  const relationship = chart?.chartType === "scatter" || chart?.chartType === "bubble";
   return {
-    labels: categories.map((category) => formatCategory(categoryDimension.id, category)),
+    labels,
     datasets: seriesNames.map((name) => ({
       label: name,
-      data: categories.map((category) => number(categoryValues.get(category).get(name))),
+      data: relationship
+        ? categories.map((category, index) => {
+          const value = categoryValues.get(category).get(name) || {};
+          return {
+            x: number(value.value),
+            y: number(value.secondary),
+            ...(chart.chartType === "bubble" ? { r: Math.max(4, Math.min(24, 4 + Math.sqrt(Math.abs(number(value.size || value.secondary))))) } : {}),
+            category: labels[index],
+          };
+        }).filter((point) => point.x || point.y)
+        : categories.map((category) => number(categoryValues.get(category).get(name)?.value)),
     })),
+    secondaryDatasets: secondaryMetric && !relationship ? seriesNames.map((name) => ({
+      label: name,
+      data: categories.map((category) => number(categoryValues.get(category).get(name)?.secondary)),
+    })) : [],
     label: selectedMetric.label,
     unit: selectedMetric.unit,
+    secondaryLabel: secondaryMetric?.label || "",
+    secondaryUnit: secondaryMetric?.unit || "",
+    sizeLabel: sizeMetric?.label || secondaryMetric?.label || "",
   };
 }
