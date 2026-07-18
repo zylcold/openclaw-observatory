@@ -72,7 +72,18 @@ func (r *Repository) ListInstances(ctx context.Context) ([]map[string]any, error
 func (r *Repository) ListSessions(ctx context.Context, opts ListOptions) ([]map[string]any, error) {
 	o := opts.normalized()
 	q := `SELECT instance_id AS instanceId,session_id AS sessionId,session_key_hash AS sessionKeyHash,agent_id AS agentId,status,
-    started_at AS startedAt,ended_at AS endedAt,end_reason AS endReason,message_count AS messageCount FROM sessions WHERE 1=1`
+    started_at AS startedAt,ended_at AS endedAt,end_reason AS endReason,message_count AS messageCount,
+    (SELECT COUNT(*) FROM llm_calls l WHERE l.instance_id=sessions.instance_id AND l.session_id=sessions.session_id) AS llmCalls,
+    (SELECT COUNT(*) FROM tool_calls t WHERE t.instance_id=sessions.instance_id AND t.session_id=sessions.session_id)
+      +(SELECT COUNT(*) FROM mcp_calls m WHERE m.instance_id=sessions.instance_id AND m.session_id=sessions.session_id) AS toolCalls,
+    (SELECT COALESCE(SUM(l.input_tokens+l.output_tokens+l.cache_read_tokens+l.cache_write_tokens),0) FROM llm_calls l
+      WHERE l.instance_id=sessions.instance_id AND l.session_id=sessions.session_id) AS totalTokens,
+    (SELECT COALESCE(SUM(l.cost_usd),0) FROM llm_calls l WHERE l.instance_id=sessions.instance_id AND l.session_id=sessions.session_id) AS costUsd,
+    (SELECT COUNT(*) FROM llm_calls l WHERE l.instance_id=sessions.instance_id AND l.session_id=sessions.session_id AND l.status='failed')
+      +(SELECT COUNT(*) FROM tool_calls t WHERE t.instance_id=sessions.instance_id AND t.session_id=sessions.session_id AND t.status='failed')
+      +(SELECT COUNT(*) FROM mcp_calls m WHERE m.instance_id=sessions.instance_id AND m.session_id=sessions.session_id AND m.status='failed') AS errors,
+    (SELECT COUNT(*) FROM retry_events re WHERE re.instance_id=sessions.instance_id AND re.session_id=sessions.session_id) AS retries
+    FROM sessions WHERE 1=1`
 	var args []any
 	q, args = filters(q, args, o, "started_at", true)
 	if o.AgentID != "" {
@@ -201,37 +212,76 @@ func (r *Repository) SessionDetail(ctx context.Context, id string) (map[string]a
 		}
 		return nil, err
 	}
-	runs, err := queryMaps(ctx, r.db, `SELECT run_id AS runId,COALESCE(NULLIF(agent_id,''),NULLIF((SELECT agent_id FROM sessions WHERE sessions.instance_id=agent_runs.instance_id AND sessions.session_id=agent_runs.session_id LIMIT 1),''),'unknown') AS agentId,provider,model,status,started_at AS startedAt,ended_at AS endedAt,duration_ms AS durationMs
+	runs, err := queryMaps(ctx, r.db, `SELECT run_id AS runId,COALESCE(NULLIF(agent_id,''),NULLIF((SELECT agent_id FROM sessions WHERE sessions.instance_id=agent_runs.instance_id AND sessions.session_id=agent_runs.session_id LIMIT 1),''),'unknown') AS agentId,
+    provider,model,status,started_at AS startedAt,ended_at AS endedAt,duration_ms AS durationMs,
+    COALESCE(NULLIF(trace_id,''),run_id) AS traceId,COALESCE(NULLIF(span_id,''),run_id) AS spanId,parent_span_id AS parentSpanId
     FROM agent_runs WHERE session_id=? ORDER BY started_at DESC LIMIT 500`, id)
 	if err != nil {
 		return nil, err
 	}
 	rows[0]["runs"] = runs
 	timeline, err := queryMaps(ctx, r.db, `SELECT * FROM (
-      SELECT 'llm' AS kind,l.call_id AS id,l.run_id AS runId,COALESCE(NULLIF(l.model,''),'unknown') AS label,
-        l.provider,l.model,NULL AS toolName,l.status,l.started_at AS startedAt,l.ended_at AS endedAt,l.duration_ms AS durationMs,
-        l.error_category AS errorCategory,l.input_tokens AS inputTokens,l.output_tokens AS outputTokens,
-        l.cache_read_tokens AS cacheReadTokens,l.cache_write_tokens AS cacheWriteTokens,l.cost_usd AS costUsd
-      FROM llm_calls l WHERE l.session_id=?
+      SELECT 'llm' AS kind,l.call_id AS id,l.run_id AS runId,
+        COALESCE(NULLIF(l.trace_id,''),NULLIF(r.trace_id,''),l.run_id,l.session_id) AS traceId,
+        COALESCE(NULLIF(l.span_id,''),l.call_id) AS spanId,COALESCE(NULLIF(l.parent_span_id,''),NULLIF(r.span_id,''),l.run_id) AS parentSpanId,
+        COALESCE(NULLIF(l.model,''),'unknown') AS label,l.provider,l.model,NULL AS toolName,l.status,
+        COALESCE(l.started_at,l.ended_at) AS startedAt,l.ended_at AS endedAt,l.duration_ms AS durationMs,l.error_category AS errorCategory,
+        l.input_tokens AS inputTokens,l.output_tokens AS outputTokens,l.cache_read_tokens AS cacheReadTokens,l.cache_write_tokens AS cacheWriteTokens,l.cost_usd AS costUsd,
+        l.time_to_first_byte_ms AS timeToFirstByteMs,l.time_to_first_token_ms AS timeToFirstTokenMs,l.generation_duration_ms AS generationDurationMs,
+        l.stop_reason AS stopReason,l.attempt,l.retry_reason AS retryReason,l.request_bytes AS requestBytes,l.response_bytes AS responseBytes
+      FROM llm_calls l LEFT JOIN agent_runs r ON r.instance_id=l.instance_id AND r.run_id=l.run_id
+      WHERE l.session_id=?
       UNION ALL
-      SELECT 'tool',t.tool_call_id,t.run_id,COALESCE(NULLIF(t.tool_name,''),'unknown'),
-        NULL,NULL,t.tool_name,t.status,t.started_at,t.ended_at,t.duration_ms,t.error_category,NULL,NULL,NULL,NULL,NULL
-      FROM tool_calls t WHERE t.session_id=?
+      SELECT 'tool',t.tool_call_id,t.run_id,
+        COALESCE(NULLIF(t.trace_id,''),NULLIF(r.trace_id,''),t.run_id,t.session_id),
+        COALESCE(NULLIF(t.span_id,''),t.tool_call_id),COALESCE(NULLIF(t.parent_span_id,''),NULLIF(r.span_id,''),t.run_id),
+        COALESCE(NULLIF(t.tool_name,''),'unknown'),NULL,NULL,t.tool_name,t.status,COALESCE(t.started_at,t.ended_at),t.ended_at,t.duration_ms,t.error_category,
+        NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,t.attempt,t.retry_reason,NULL,NULL
+      FROM tool_calls t LEFT JOIN agent_runs r ON r.instance_id=t.instance_id AND r.run_id=t.run_id WHERE t.session_id=?
       UNION ALL
-      SELECT 'mcp',m.call_id,m.run_id,COALESCE(NULLIF(m.tool_name,''),'unknown'),
-        NULL,NULL,m.tool_name,m.status,m.started_at,m.ended_at,m.duration_ms,m.error_category,NULL,NULL,NULL,NULL,NULL
-      FROM mcp_calls m WHERE m.session_id=?
+      SELECT 'mcp',m.call_id,m.run_id,
+        COALESCE(NULLIF(m.trace_id,''),NULLIF(r.trace_id,''),m.run_id,m.session_id),
+        COALESCE(NULLIF(m.span_id,''),m.call_id),COALESCE(NULLIF(m.parent_span_id,''),NULLIF(r.span_id,''),m.run_id),
+        COALESCE(NULLIF(m.tool_name,''),'unknown'),NULL,NULL,m.tool_name,m.status,COALESCE(m.started_at,m.ended_at),m.ended_at,m.duration_ms,m.error_category,
+        NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,m.attempt,m.retry_reason,NULL,NULL
+      FROM mcp_calls m LEFT JOIN agent_runs r ON r.instance_id=m.instance_id AND r.run_id=m.run_id WHERE m.session_id=?
       UNION ALL
-      SELECT 'subagent',sr.subagent_id,sr.parent_run_id,COALESCE(NULLIF(sr.agent_id,''),'unknown'),
-        sr.provider,sr.model,NULL,sr.status,sr.started_at,sr.ended_at,
+      SELECT 'subagent',sr.subagent_id,sr.parent_run_id,
+        COALESCE(NULLIF(sr.trace_id,''),NULLIF(r.trace_id,''),sr.parent_run_id),
+        COALESCE(NULLIF(sr.span_id,''),sr.subagent_id),COALESCE(NULLIF(sr.parent_span_id,''),NULLIF(r.span_id,''),sr.parent_run_id),
+        COALESCE(NULLIF(sr.agent_id,''),'unknown'),sr.provider,sr.model,NULL,sr.status,COALESCE(sr.started_at,sr.ended_at),sr.ended_at,
         CASE WHEN sr.started_at IS NOT NULL AND sr.ended_at IS NOT NULL THEN 1000.0*(julianday(sr.ended_at)-julianday(sr.started_at))*86400.0 END,
-        CASE WHEN sr.status='failed' THEN COALESCE(NULLIF(sr.outcome,''),'unknown') END,NULL,NULL,NULL,NULL,NULL
-      FROM subagent_runs sr WHERE sr.parent_run_id IN (SELECT run_id FROM agent_runs WHERE session_id=?)
-    ) WHERE startedAt IS NOT NULL ORDER BY startedAt,id LIMIT 2000`, id, id, id, id)
+        CASE WHEN sr.status='failed' THEN COALESCE(NULLIF(sr.outcome,''),'unknown') END,
+        NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL
+      FROM subagent_runs sr LEFT JOIN agent_runs r ON r.instance_id=sr.instance_id AND r.run_id=sr.parent_run_id
+      WHERE sr.parent_run_id IN (SELECT run_id FROM agent_runs WHERE session_id=?)
+      UNION ALL
+      SELECT 'retry',re.event_id,re.run_id,COALESCE(NULLIF(re.trace_id,''),re.run_id,re.session_id),
+        COALESCE(NULLIF(re.span_id,''),re.event_id),COALESCE(NULLIF(re.parent_span_id,''),re.run_id),
+        COALESCE(NULLIF(re.to_model,''),NULLIF(re.to_provider,''),'model retry'),re.to_provider,re.to_model,NULL,'retried',
+        re.occurred_at,re.occurred_at,0,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,re.attempt,re.reason,NULL,NULL
+      FROM retry_events re WHERE re.session_id=?
+    ) WHERE startedAt IS NOT NULL ORDER BY startedAt,id LIMIT 2000`, id, id, id, id, id)
 	if err != nil {
 		return nil, err
 	}
 	rows[0]["timeline"] = timeline
+	summary, err := queryMaps(ctx, r.db, `SELECT
+      (SELECT COUNT(*) FROM llm_calls WHERE session_id=?) AS llmCalls,
+      (SELECT COUNT(*) FROM tool_calls WHERE session_id=?) + (SELECT COUNT(*) FROM mcp_calls WHERE session_id=?) AS toolCalls,
+      (SELECT COALESCE(SUM(input_tokens+output_tokens+cache_read_tokens+cache_write_tokens),0) FROM llm_calls WHERE session_id=?) AS totalTokens,
+      (SELECT COALESCE(SUM(cost_usd),0) FROM llm_calls WHERE session_id=?) AS costUsd,
+      (SELECT COUNT(*) FROM llm_calls WHERE session_id=? AND status='failed')
+        + (SELECT COUNT(*) FROM tool_calls WHERE session_id=? AND status='failed')
+        + (SELECT COUNT(*) FROM mcp_calls WHERE session_id=? AND status='failed') AS errors,
+      (SELECT COUNT(*) FROM retry_events WHERE session_id=?) AS retries`,
+		id, id, id, id, id, id, id, id, id)
+	if err != nil {
+		return nil, err
+	}
+	if len(summary) > 0 {
+		rows[0]["summary"] = summary[0]
+	}
 	return rows[0], nil
 }
 
@@ -268,7 +318,7 @@ func (r *Repository) Status(ctx context.Context) (map[string]any, error) {
 		return nil, err
 	}
 	counts := map[string]int64{}
-	for _, table := range []string{"events", "sessions", "agent_runs", "subagent_runs", "llm_calls", "tool_calls", "mcp_calls", "resource_samples"} {
+	for _, table := range []string{"events", "sessions", "agent_runs", "subagent_runs", "llm_calls", "tool_calls", "mcp_calls", "retry_events", "resource_samples"} {
 		n, err := r.Count(ctx, table)
 		if err != nil {
 			return nil, err

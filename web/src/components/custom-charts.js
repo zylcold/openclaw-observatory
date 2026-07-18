@@ -1,7 +1,7 @@
 import { customChart, hasChart, palette, updateChartData } from "../charts.js";
 import {
   CHART_TYPES, buildCustomChartSeries, chartTypeById, defaultCustomChartTitle,
-  dimensionById, dimensionGroupById, metricById, suitableDimensionGroups,
+  dimensionById, dimensionGroupById, metricById, suitableDimensionGroupsForDomain,
 } from "../custom-chart-model.js";
 import { esc } from "../format.js";
 
@@ -24,14 +24,14 @@ function chartGlyph(type) {
   return `<svg viewBox="0 0 88 44" aria-hidden="true"><path d="M42 3A19 19 0 0 0 25 31L42 22Z"/><path class="glyph-secondary" d="M46 3V20H65A19 19 0 0 0 46 3Z"/><path class="glyph-tertiary" d="M64 24H47L31 34A19 19 0 0 0 64 24Z"/>${hole}</svg>`;
 }
 
-export function customChartBuilderHTML(builder) {
+export function customChartBuilderHTML(builder, domain = "overview") {
   if (!builder?.open) return "";
   const step = builder.step === 2 ? 2 : 1;
   const group = dimensionGroupById(builder.dataset);
   const dimensions = Array.isArray(builder.dimensions) ? builder.dimensions : [];
   const selectedMetric = metricById(builder.dataset, builder.metric);
   const suggestedTitle = defaultCustomChartTitle(builder.dataset, dimensions, builder.metric);
-  const suitableGroups = suitableDimensionGroups(builder.chartType);
+  const suitableGroups = suitableDimensionGroupsForDomain(builder.chartType, domain);
   return `
     <div class="modal-backdrop open" id="custom-builder-backdrop"></div>
     <section class="chart-builder" role="dialog" aria-modal="true" aria-labelledby="custom-builder-title">
@@ -56,7 +56,7 @@ export function customChartBuilderHTML(builder) {
           <button id="custom-builder-back">更换</button>
         </div>
         <div class="builder-section">
-          <label class="builder-label">数据维度 <small>在同一分组内选择 1–2 个维度</small></label>
+          <label class="builder-label">数据维度 <small>已按当前观测域分组，可选择 1–2 个维度</small></label>
           <div class="dimension-groups">
             ${suitableGroups.map((item) => {
               const groupSelected = builder.dataset === item.id;

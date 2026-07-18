@@ -39,6 +39,84 @@ func TestInsertEventsSplitsLargeBatchesAndAggregatesResults(t *testing.T) {
 	}
 }
 
+func TestRecentAnomaliesSupportsEmptyDatabase(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	rows, err := repo.RecentAnomalies(context.Background(), ListOptions{Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected no anomalies, got %#v", rows)
+	}
+}
+
+func TestTraceTelemetryRetryAndTerminalStateProjection(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	ctx := context.Background()
+	events := []event.Event{
+		testEvent("61000000-0000-4000-8000-000000000001", "session.started", 1, map[string]any{"sessionId": "session-trace", "agentId": "main"}),
+		testEvent("61000000-0000-4000-8000-000000000002", "agent.started", 2, map[string]any{
+			"runId": "run-trace", "sessionId": "session-trace", "traceId": "trace-1", "spanId": "run-span",
+		}),
+		testEvent("61000000-0000-4000-8000-000000000003", "llm.completed", 3, map[string]any{
+			"callId": "llm-span", "runId": "run-trace", "sessionId": "session-trace", "traceId": "trace-1",
+			"spanId": "llm-span", "parentSpanId": "run-span", "provider": "openai", "model": "gpt",
+			"durationMs": 900, "timeToFirstByteMs": 100, "timeToFirstTokenMs": 140, "generationDurationMs": 700,
+			"stopReason": "stop", "attempt": 2, "retryReason": "rate_limit", "requestPayloadBytes": 1200,
+			"responseStreamBytes": 2400, "inputTokens": 100, "outputTokens": 20, "costUsd": 0.04,
+		}),
+		testEvent("61000000-0000-4000-8000-000000000004", "llm.retried", 4, map[string]any{
+			"runId": "run-trace", "sessionId": "session-trace", "traceId": "trace-1", "spanId": "retry-span",
+			"parentSpanId": "run-span", "attempt": 2, "fromModel": "gpt-a", "toModel": "gpt-b", "reason": "rate_limit",
+		}),
+		testEvent("61000000-0000-4000-8000-000000000005", "tool.completed", 5, map[string]any{
+			"toolCallId": "tool-span", "runId": "run-trace", "sessionId": "session-trace", "traceId": "trace-1",
+			"spanId": "tool-span", "parentSpanId": "run-span", "toolName": "exec", "durationMs": 50, "attempt": 2,
+		}),
+		testEvent("61000000-0000-4000-8000-000000000006", "tool.started", 6, map[string]any{
+			"toolCallId": "tool-span", "runId": "run-trace", "sessionId": "session-trace", "toolName": "exec",
+		}),
+	}
+	if _, err := repo.InsertEvents(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := repo.SessionDetail(ctx, "session-trace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeline := detail["timeline"].([]map[string]any)
+	if len(timeline) != 3 {
+		t.Fatalf("expected llm, retry and tool spans, got %#v", timeline)
+	}
+	var llm, tool map[string]any
+	for _, item := range timeline {
+		switch item["kind"] {
+		case "llm":
+			llm = item
+		case "tool":
+			tool = item
+		}
+	}
+	if llm["traceId"] != "trace-1" || llm["parentSpanId"] != "run-span" || llm["timeToFirstTokenMs"] != float64(140) {
+		t.Fatalf("missing trace telemetry: %#v", llm)
+	}
+	if tool["status"] != "completed" {
+		t.Fatalf("late tool start regressed terminal status: %#v", tool)
+	}
+	summary := detail["summary"].(map[string]any)
+	if summary["retries"] != int64(1) || summary["totalTokens"] != float64(120) {
+		t.Fatalf("unexpected trace summary: %#v", summary)
+	}
+}
+
 func TestDeleteBeforePurgesInBoundedBatches(t *testing.T) {
 	repo, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -269,8 +347,35 @@ func TestV3AnalyticsAndSessionTimeline(t *testing.T) {
 	points := series["points"].([]map[string]any)
 	models := series["models"].([]map[string]any)
 	heatmap := series["agents"].([]map[string]any)
-	if len(points) != 1 || points[0]["llmRequests"] != int64(1) || points[0]["toolCalls"] != int64(2) || points[0]["diskUsedPercent"] != float64(75) || len(models) != 1 || len(heatmap) != 1 {
+	toolSeries := series["tools"].([]map[string]any)
+	if len(points) != 1 || points[0]["llmRequests"] != int64(1) || points[0]["toolCalls"] != int64(2) || points[0]["diskUsedPercent"] != float64(75) || len(models) != 1 || len(heatmap) != 1 || len(toolSeries) != 2 {
 		t.Fatalf("unexpected timeseries: %#v", series)
+	}
+	var execSeries map[string]any
+	for _, tool := range toolSeries {
+		if tool["tool"] == "exec" {
+			execSeries = tool
+		}
+	}
+	if execSeries == nil || execSeries["p95DurationMs"] != float64(100) || execSeries["p99DurationMs"] != float64(100) {
+		t.Fatalf("tool timeseries tail latency missing: %#v", toolSeries)
+	}
+	tools, err := repo.ToolStats(ctx, opts)
+	if err != nil || len(tools) != 2 {
+		t.Fatalf("unexpected tool stats: %#v err=%v", tools, err)
+	}
+	var execStats map[string]any
+	for _, tool := range tools {
+		if tool["tool"] == "exec" {
+			execStats = tool
+		}
+	}
+	if execStats == nil || execStats["p95DurationMs"] != float64(100) || execStats["p99DurationMs"] != float64(100) || execStats["timeouts"] != int64(1) || execStats["failureRate"] != float64(100) {
+		t.Fatalf("tool tail latency or timeout aggregation missing: %#v", tools)
+	}
+	failedTools, err := repo.ToolStats(ctx, ListOptions{From: opts.From, To: opts.To, Status: "failed"})
+	if err != nil || len(failedTools) != 1 || failedTools[0]["tool"] != "exec" {
+		t.Fatalf("tool status filter did not reach aggregate query: %#v err=%v", failedTools, err)
 	}
 
 	mcp, err := repo.ListMCPCalls(ctx, opts)

@@ -2,6 +2,7 @@ import { comboChart, doughnutChart, lineChart, palette, scatterChart, updateChar
 import { bytes, compact, esc, money, ms, num, shortTime, setShortTimeRange } from "../format.js";
 import { KPI_METRICS } from "../config.js";
 import { paintCustomCharts, updateCustomCharts } from "./custom-charts.js";
+import { buildTraceTree, traceSummary } from "../trace-model.js";
 
 // Range constants for time-based formatting decisions
 const RANGE_MS = { "1h": 3600000, "6h": 21600000, "24h": 86400000, "7d": 604800000, "30d": 2592000000 };
@@ -180,6 +181,52 @@ function waterfall(detail) {
   return html;
 }
 
+function traceNode(item, critical, depth = 0) {
+  const tokens = Number(item.inputTokens || 0) + Number(item.outputTokens || 0)
+    + Number(item.cacheReadTokens || 0) + Number(item.cacheWriteTokens || 0);
+  const facts = [
+    item.provider && item.model ? `${item.provider}/${item.model}` : "",
+    item.timeToFirstTokenMs != null ? `TTFT ${ms(item.timeToFirstTokenMs)}` : "",
+    item.timeToFirstByteMs != null ? `TTFB ${ms(item.timeToFirstByteMs)}` : "",
+    item.generationDurationMs != null ? `生成 ${ms(item.generationDurationMs)}` : "",
+    tokens ? `${compact(tokens)} token` : "",
+    Number(item.costUsd || 0) ? money(item.costUsd) : "",
+    Number(item.attempt || 1) > 1 ? `attempt ${item.attempt}` : "",
+  ].filter(Boolean);
+  const diagnostics = [
+    ["Trace", item.traceId],
+    ["Span", item.spanId],
+    ["Parent", item.parentSpanId],
+    ["Stop", item.stopReason],
+    ["Retry", item.retryReason],
+    ["Error", item.errorCategory],
+    ["Request", item.requestBytes != null ? bytes(item.requestBytes) : ""],
+    ["Response", item.responseBytes != null ? bytes(item.responseBytes) : ""],
+  ].filter(([, value]) => value !== undefined && value !== null && value !== "");
+  const children = (item.children || []).map((child) => traceNode(child, critical, depth + 1)).join("");
+  return `<details class="trace-node kind-${esc(item.kind)} ${critical.has(item.spanId) ? "critical-path" : ""}" ${depth < 1 ? "open" : ""}>
+    <summary>
+      <span class="trace-indent" style="--trace-depth:${depth}"></span>
+      <em class="kind ${esc(item.kind)}">${esc(item.kind)}</em>
+      <b>${esc(item.label || item.id || "unknown")}</b>
+      <span class="trace-facts">${esc(facts.join(" · "))}</span>
+      ${critical.has(item.spanId) ? `<i>关键路径</i>` : ""}
+      <strong>${ms(item.durationMs)}</strong>
+    </summary>
+    ${diagnostics.length ? `<dl>${diagnostics.map(([label, value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join("")}</dl>` : ""}
+    ${children}
+  </details>`;
+}
+
+function traceTree(detail) {
+  if (!detail?.timeline?.length) return empty("选择 Session 后展示 Trace 树、关键路径与调用详情");
+  const tree = buildTraceTree(detail);
+  return `<div class="trace-tree">
+    <div class="trace-tree-head"><span>调用树</span><small>关键路径 ${ms(tree.criticalDurationMs)} · 点击节点展开安全诊断字段</small></div>
+    ${tree.roots.map((root) => traceNode(root, tree.criticalSpanIds)).join("")}
+  </div>`;
+}
+
 function sessions(data, detail) {
   const rows = data.sessions || [];
   var selector = "";
@@ -187,7 +234,16 @@ function sessions(data, detail) {
     var opts = rows.map((s) => "<option value=\"" + esc(s.sessionId) + "\"" + (detail?.sessionId === s.sessionId ? " selected" : "") + ">" + esc(s.agentId || "unknown") + " · " + esc(shortTime(s.startedAt)) + " · " + esc(s.status) + "</option>").join("");
     selector = "<label class=\"session-select\">Session <select id=\"session-picker\">" + opts + "</select></label>";
   }
-  return selector + waterfall(detail);
+  const summary = traceSummary(detail);
+  const summaryHTML = detail ? `<div class="trace-summary">
+    <span><small>LLM</small><b>${num(summary.llmCalls)}</b></span>
+    <span><small>Tool / MCP</small><b>${num(summary.toolCalls)}</b></span>
+    <span><small>Token</small><b>${compact(summary.totalTokens)}</b></span>
+    <span><small>Cost</small><b>${money(summary.costUsd)}</b></span>
+    <span class="${summary.errors ? "bad" : ""}"><small>异常</small><b>${num(summary.errors)}</b></span>
+    <span class="${summary.retries ? "warn" : ""}"><small>Retry</small><b>${num(summary.retries)}</b></span>
+  </div>` : "";
+  return selector + summaryHTML + `<div class="trace-layout"><section>${traceTree(detail)}</section><section>${waterfall(detail)}</section></div>`;
 }
 
 function errorsCost(data) {
@@ -261,7 +317,7 @@ function toolRanking(tools) {
   return "<div class=\"tool-ranking\">" + tools.map((tool) => "<div title=\"" + esc(tool.source) + ":" + esc(tool.tool) + " · " + num(tool.calls) + "\"><span>" + esc(tool.source) + ":" + esc(tool.tool) + "</span><i><b style=\"width:" + (100 * Number(tool.calls || 0) / max) + "%\"></b></i><strong>" + num(tool.calls) + "</strong></div>").join("") + "</div>";
 }
 
-export function moduleHTML(id, data, config, sessionDetail, kpiEditorOpen) {
+export function moduleHTML(id, data, config, sessionDetail, kpiEditorOpen, options = {}) {
   var body = "";
   if (id === "overview") body = overview(data, config, kpiEditorOpen);
   if (id === "resources") body = chart("resources-chart");
@@ -279,7 +335,9 @@ export function moduleHTML(id, data, config, sessionDetail, kpiEditorOpen) {
   var editBtn = id === "overview"
     ? "<button class=\"kpi-edit-btn" + (kpiEditorOpen ? " active" : "") + "\" id=\"kpi-edit-toggle\" title=\"编辑指标\">" + (kpiEditorOpen ? "✓" : "✎") + "</button>"
     : "";
-  return "<article class=\"panel module-" + id + "\" draggable=\"true\" data-module=\"" + id + "\"><header><div><span class=\"drag\" title=\"Drag to reorder\">⠿</span><h2>" + names[id] + "</h2></div>" + editBtn + "</header>" + body + "</article>";
+  const draggable = options.draggable !== false;
+  const dragHandle = draggable ? "<span class=\"drag\" title=\"Drag to reorder\">⠿</span>" : "";
+  return "<article class=\"panel module-" + id + "\" draggable=\"" + draggable + "\" data-module=\"" + id + "\"><header><div>" + dragHandle + "<h2>" + names[id] + "</h2></div>" + editBtn + "</header>" + body + "</article>";
 }
 
 export function paintCharts(data, config = {}) {

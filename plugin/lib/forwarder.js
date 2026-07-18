@@ -127,34 +127,50 @@ export class Forwarder {
       sessionKeyHash: this.sessionKeyHash(evt.sessionKey), provider: cleanString(evt.provider, 128),
       model: cleanString(evt.model, 256), channel: cleanString(evt.channel, 64),
       agentId: cleanString(evt.agentId, 128) || agentIdFromSessionKey(evt.sessionKey),
+      traceId: cleanString(evt.traceId) || cleanString(evt.runId) || cleanString(evt.sessionId),
     };
+    const runTrace = {
+      ...base,
+      spanId: cleanString(evt.spanId) || cleanString(evt.runId),
+      parentSpanId: cleanString(evt.parentSpanId),
+    };
+    const callTrace = (id) => ({
+      ...base,
+      spanId: cleanString(evt.spanId) || cleanString(id),
+      parentSpanId: cleanString(evt.parentSpanId) || cleanString(evt.runId),
+      attempt: Number.isFinite(evt.attempt) ? evt.attempt : undefined,
+      retryReason: cleanString(evt.retryReason, 128),
+    });
     switch (evt.type) {
       case "run.started":
-        this.enqueue("agent.started", { ...base, trigger: cleanString(evt.trigger, 64) }, "normal", evt.ts); break;
+        this.enqueue("agent.started", { ...runTrace, trigger: cleanString(evt.trigger, 64) }, "normal", evt.ts); break;
       case "run.completed":
         this.enqueue(evt.outcome === "completed" ? "agent.completed" : "agent.failed", {
-          ...base, trigger: cleanString(evt.trigger, 64), durationMs: evt.durationMs,
+          ...runTrace, trigger: cleanString(evt.trigger, 64), durationMs: evt.durationMs,
           outcome: cleanString(evt.outcome, 32), errorCategory: cleanString(evt.errorCategory, 64),
         }, "critical", evt.ts); break;
       case "model.call.started": {
-        const value = { ...base, callId: cleanString(evt.callId), api: cleanString(evt.api, 64), transport: cleanString(evt.transport, 64) };
+        const value = { ...callTrace(evt.callId), callId: cleanString(evt.callId), api: cleanString(evt.api, 64), transport: cleanString(evt.transport, 64) };
         this.rememberCall(evt, value, "active"); this.enqueue("llm.started", value, "normal", evt.ts); break;
       }
       case "model.call.completed":
       case "model.call.error": {
         const failed = evt.type.endsWith("error");
-        const value = { ...base, callId: cleanString(evt.callId), api: cleanString(evt.api, 64), transport: cleanString(evt.transport, 64),
+        const value = { ...callTrace(evt.callId), callId: cleanString(evt.callId), api: cleanString(evt.api, 64), transport: cleanString(evt.transport, 64),
           durationMs: evt.durationMs, errorCategory: cleanString(evt.errorCategory, 64), failureKind: cleanString(evt.failureKind, 64),
-          requestPayloadBytes: evt.requestPayloadBytes, responseStreamBytes: evt.responseStreamBytes, timeToFirstByteMs: evt.timeToFirstByteMs };
+          requestPayloadBytes: evt.requestPayloadBytes, responseStreamBytes: evt.responseStreamBytes,
+          timeToFirstByteMs: evt.timeToFirstByteMs, timeToFirstTokenMs: evt.timeToFirstTokenMs,
+          generationDurationMs: evt.generationDurationMs, stopReason: cleanString(evt.stopReason, 64) };
         this.rememberCall(evt, value, failed ? "failed" : "completed"); this.enqueue(failed ? "llm.failed" : "llm.completed", value, "critical", evt.ts); break;
       }
       case "model.usage": {
         this.mapUsage(evt); break;
       }
       case "model.failover":
-        this.enqueue("llm.retried", { sessionId: base.sessionId, sessionKeyHash: base.sessionKeyHash,
+        this.enqueue("llm.retried", { ...callTrace(evt.callId), sessionKeyHash: base.sessionKeyHash,
           fromProvider: cleanString(evt.fromProvider,128), fromModel: cleanString(evt.fromModel,256),
-          toProvider: cleanString(evt.toProvider,128), toModel: cleanString(evt.toModel,256), reason: cleanString(evt.reason,64),
+          toProvider: cleanString(evt.toProvider,128), toModel: cleanString(evt.toModel,256),
+          reason: cleanString(evt.reason,128), attempt: Number.isFinite(evt.attempt) ? evt.attempt : 1,
         }, "normal", evt.ts); break;
       case "tool.execution.started":
       case "tool.execution.completed":
@@ -163,7 +179,8 @@ export class Forwarder {
         const suffix = evt.type.split(".").at(-1); const terminal = suffix !== "started";
         const family = evt.toolSource === "mcp" ? "mcp" : "tool";
         const state = suffix === "started" ? "started" : suffix === "completed" ? "completed" : "failed";
-        this.enqueue(`${family}.${state}`, { ...base, toolCallId: cleanString(evt.toolCallId) || `event-${evt.seq}`,
+        const toolCallId = cleanString(evt.toolCallId) || `event-${evt.seq}`;
+        this.enqueue(`${family}.${state}`, { ...callTrace(toolCallId), toolCallId,
           toolName: cleanString(evt.toolName,128) || "unknown", toolSource: cleanString(evt.toolSource,32),
           toolOwner: cleanString(evt.toolOwner,128), durationMs: evt.durationMs,
           errorCategory: cleanString(evt.errorCategory,64) || (suffix === "blocked" ? "blocked" : undefined),

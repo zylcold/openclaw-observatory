@@ -96,7 +96,7 @@ func Open(path string) (*Repository, error) {
 	for _, migration := range []struct {
 		version int
 		sql     string
-	}{{2, schemaV2}, {3, schemaV3}, {4, schemaV4}, {5, schemaV5}} {
+	}{{2, schemaV2}, {3, schemaV3}, {4, schemaV4}, {5, schemaV5}, {6, schemaV6}} {
 		if err := applyMigration(db, migration.version, migration.sql); err != nil {
 			db.Close()
 			return nil, err
@@ -313,15 +313,17 @@ func reduce(ctx context.Context, tx *sql.Tx, e event.Event) error {
 			return nil
 		}
 		status := statusFor(e.EventType)
-		_, err := tx.ExecContext(ctx, `INSERT INTO agent_runs(instance_id,run_id,session_id,agent_id,provider,model,channel,trigger,status,started_at,ended_at,duration_ms,error_category)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,run_id) DO UPDATE SET
+		_, err := tx.ExecContext(ctx, `INSERT INTO agent_runs(instance_id,run_id,session_id,agent_id,provider,model,channel,trigger,status,started_at,ended_at,duration_ms,error_category,trace_id,span_id,parent_span_id)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,run_id) DO UPDATE SET
 		session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),provider=COALESCE(NULLIF(excluded.provider,''),provider),
 		agent_id=COALESCE(NULLIF(excluded.agent_id,''),agent_id),
 		model=COALESCE(NULLIF(excluded.model,''),model),channel=COALESCE(NULLIF(excluded.channel,''),channel),trigger=COALESCE(NULLIF(excluded.trigger,''),trigger),
         status=CASE WHEN excluded.status='active' AND status!='unknown' THEN status ELSE excluded.status END,
-        started_at=COALESCE(started_at,excluded.started_at),ended_at=COALESCE(excluded.ended_at,ended_at),duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category)`,
+        started_at=COALESCE(started_at,excluded.started_at),ended_at=COALESCE(excluded.ended_at,ended_at),duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category),
+        trace_id=COALESCE(NULLIF(excluded.trace_id,''),trace_id),span_id=COALESCE(NULLIF(excluded.span_id,''),span_id),parent_span_id=COALESCE(NULLIF(excluded.parent_span_id,''),parent_span_id)`,
 			e.InstanceID, id, event.String(p, "sessionId"), event.String(p, "agentId"), event.String(p, "provider"), event.String(p, "model"), event.String(p, "channel"), event.String(p, "trigger"), status,
-			nullTime(e.EventType == "agent.started", t), nullTime(e.EventType != "agent.started", t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"))
+			nullTime(e.EventType == "agent.started", t), nullTime(e.EventType != "agent.started", t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"),
+			event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"))
 		return err
 	case "llm.started", "llm.completed", "llm.failed":
 		id := event.String(p, "callId")
@@ -332,16 +334,31 @@ func reduce(ctx context.Context, tx *sql.Tx, e event.Event) error {
 			return nil
 		}
 		status := statusFor(e.EventType)
-		_, err := tx.ExecContext(ctx, `INSERT INTO llm_calls(instance_id,call_id,run_id,session_id,provider,model,status,started_at,ended_at,duration_ms,error_category,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost_usd)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,call_id) DO UPDATE SET
+		_, err := tx.ExecContext(ctx, `INSERT INTO llm_calls(instance_id,call_id,run_id,session_id,provider,model,status,started_at,ended_at,duration_ms,error_category,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost_usd,
+        trace_id,span_id,parent_span_id,time_to_first_byte_ms,time_to_first_token_ms,generation_duration_ms,stop_reason,attempt,retry_reason,request_bytes,response_bytes)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,call_id) DO UPDATE SET
         run_id=COALESCE(NULLIF(excluded.run_id,''),run_id),session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),provider=COALESCE(NULLIF(excluded.provider,''),provider),model=COALESCE(NULLIF(excluded.model,''),model),
         status=CASE WHEN excluded.status='active' AND status!='unknown' THEN status ELSE excluded.status END,started_at=COALESCE(started_at,excluded.started_at),ended_at=COALESCE(excluded.ended_at,ended_at),
         duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category),
         input_tokens=MAX(input_tokens,excluded.input_tokens),output_tokens=MAX(output_tokens,excluded.output_tokens),cache_read_tokens=MAX(cache_read_tokens,excluded.cache_read_tokens),
-        cache_write_tokens=MAX(cache_write_tokens,excluded.cache_write_tokens),cost_usd=MAX(cost_usd,excluded.cost_usd)`,
+        cache_write_tokens=MAX(cache_write_tokens,excluded.cache_write_tokens),cost_usd=MAX(cost_usd,excluded.cost_usd),
+        trace_id=COALESCE(NULLIF(excluded.trace_id,''),trace_id),span_id=COALESCE(NULLIF(excluded.span_id,''),span_id),parent_span_id=COALESCE(NULLIF(excluded.parent_span_id,''),parent_span_id),
+        time_to_first_byte_ms=COALESCE(excluded.time_to_first_byte_ms,time_to_first_byte_ms),time_to_first_token_ms=COALESCE(excluded.time_to_first_token_ms,time_to_first_token_ms),
+        generation_duration_ms=COALESCE(excluded.generation_duration_ms,generation_duration_ms),stop_reason=COALESCE(NULLIF(excluded.stop_reason,''),stop_reason),
+        attempt=MAX(attempt,excluded.attempt),retry_reason=COALESCE(NULLIF(excluded.retry_reason,''),retry_reason),
+        request_bytes=COALESCE(excluded.request_bytes,request_bytes),response_bytes=COALESCE(excluded.response_bytes,response_bytes)`,
 			e.InstanceID, id, event.String(p, "runId"), event.String(p, "sessionId"), event.String(p, "provider"), event.String(p, "model"), status,
 			nullTime(e.EventType == "llm.started", t), nullTime(e.EventType != "llm.started", t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"),
-			event.Float(p, "inputTokens"), event.Float(p, "outputTokens"), event.Float(p, "cacheReadTokens"), event.Float(p, "cacheWriteTokens"), event.Float(p, "costUsd"))
+			event.Float(p, "inputTokens"), event.Float(p, "outputTokens"), event.Float(p, "cacheReadTokens"), event.Float(p, "cacheWriteTokens"), event.Float(p, "costUsd"),
+			event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"),
+			nullFloat(p, "timeToFirstByteMs"), nullFloat(p, "timeToFirstTokenMs"), nullFloat(p, "generationDurationMs"), event.String(p, "stopReason"),
+			positiveInt(p, "attempt", 1), event.String(p, "retryReason"), nullInt(p, "requestPayloadBytes"), nullInt(p, "responseStreamBytes"))
+		return err
+	case "llm.retried":
+		_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO retry_events(event_id,instance_id,session_id,run_id,trace_id,span_id,parent_span_id,from_provider,from_model,to_provider,to_model,attempt,reason,occurred_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, e.EventID, e.InstanceID, event.String(p, "sessionId"), event.String(p, "runId"),
+			event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"), event.String(p, "fromProvider"),
+			event.String(p, "fromModel"), event.String(p, "toProvider"), event.String(p, "toModel"), positiveInt(p, "attempt", 1), event.String(p, "reason"), t)
 		return err
 	case "tool.started", "tool.completed", "tool.failed":
 		return reduceTool(ctx, tx, e, p, t, false)
@@ -356,11 +373,14 @@ func reduce(ctx context.Context, tx *sql.Tx, e event.Event) error {
 			return nil
 		}
 		status := statusFor(e.EventType)
-		_, err := tx.ExecContext(ctx, `INSERT INTO subagent_runs(instance_id,subagent_id,parent_run_id,child_session_hash,agent_id,mode,provider,model,status,started_at,ended_at,outcome)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,subagent_id) DO UPDATE SET parent_run_id=COALESCE(NULLIF(excluded.parent_run_id,''),parent_run_id),
-        child_session_hash=COALESCE(NULLIF(excluded.child_session_hash,''),child_session_hash),status=excluded.status,started_at=COALESCE(started_at,excluded.started_at),ended_at=COALESCE(excluded.ended_at,ended_at),outcome=COALESCE(NULLIF(excluded.outcome,''),outcome)`,
+		_, err := tx.ExecContext(ctx, `INSERT INTO subagent_runs(instance_id,subagent_id,parent_run_id,child_session_hash,agent_id,mode,provider,model,status,started_at,ended_at,outcome,trace_id,span_id,parent_span_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,subagent_id) DO UPDATE SET parent_run_id=COALESCE(NULLIF(excluded.parent_run_id,''),parent_run_id),
+        child_session_hash=COALESCE(NULLIF(excluded.child_session_hash,''),child_session_hash),status=CASE WHEN excluded.status='active' AND status!='unknown' THEN status ELSE excluded.status END,
+        started_at=COALESCE(started_at,excluded.started_at),ended_at=COALESCE(excluded.ended_at,ended_at),outcome=COALESCE(NULLIF(excluded.outcome,''),outcome),
+        trace_id=COALESCE(NULLIF(excluded.trace_id,''),trace_id),span_id=COALESCE(NULLIF(excluded.span_id,''),span_id),parent_span_id=COALESCE(NULLIF(excluded.parent_span_id,''),parent_span_id)`,
 			e.InstanceID, id, event.String(p, "parentRunId"), event.String(p, "childSessionHash"), event.String(p, "agentId"), event.String(p, "mode"), event.String(p, "provider"), event.String(p, "model"), status,
-			nullTime(e.EventType == "subagent.started", t), nullTime(e.EventType != "subagent.started", t), event.String(p, "outcome"))
+			nullTime(e.EventType == "subagent.started", t), nullTime(e.EventType != "subagent.started", t), event.String(p, "outcome"),
+			event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"))
 		return err
 	case "resource.sampled":
 		_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO resource_samples(event_id,instance_id,process_id,sampled_at,cpu_seconds_total,resident_memory_bytes,virtual_memory_bytes,threads,open_fds,read_bytes,write_bytes,disk_total_bytes,disk_available_bytes)
@@ -403,20 +423,28 @@ func reduceTool(ctx context.Context, tx *sql.Tx, e event.Event, p map[string]any
 	status := statusFor(e.EventType)
 	started := strings.HasSuffix(e.EventType, ".started")
 	if mcp {
-		_, err := tx.ExecContext(ctx, `INSERT INTO mcp_calls(instance_id,call_id,run_id,session_id,tool_name,owner,status,started_at,ended_at,duration_ms,error_category)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,call_id) DO UPDATE SET run_id=COALESCE(NULLIF(excluded.run_id,''),run_id),session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),
-      tool_name=COALESCE(NULLIF(excluded.tool_name,''),tool_name),owner=COALESCE(NULLIF(excluded.owner,''),owner),status=excluded.status,started_at=COALESCE(started_at,excluded.started_at),
-      ended_at=COALESCE(excluded.ended_at,ended_at),duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category)`,
+		_, err := tx.ExecContext(ctx, `INSERT INTO mcp_calls(instance_id,call_id,run_id,session_id,tool_name,owner,status,started_at,ended_at,duration_ms,error_category,trace_id,span_id,parent_span_id,attempt,retry_reason)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,call_id) DO UPDATE SET run_id=COALESCE(NULLIF(excluded.run_id,''),run_id),session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),
+      tool_name=COALESCE(NULLIF(excluded.tool_name,''),tool_name),owner=COALESCE(NULLIF(excluded.owner,''),owner),
+      status=CASE WHEN excluded.status='active' AND status!='unknown' THEN status ELSE excluded.status END,started_at=COALESCE(started_at,excluded.started_at),
+      ended_at=COALESCE(excluded.ended_at,ended_at),duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category),
+      trace_id=COALESCE(NULLIF(excluded.trace_id,''),trace_id),span_id=COALESCE(NULLIF(excluded.span_id,''),span_id),parent_span_id=COALESCE(NULLIF(excluded.parent_span_id,''),parent_span_id),
+      attempt=MAX(attempt,excluded.attempt),retry_reason=COALESCE(NULLIF(excluded.retry_reason,''),retry_reason)`,
 			e.InstanceID, id, event.String(p, "runId"), event.String(p, "sessionId"), event.String(p, "toolName"), event.String(p, "toolOwner"), status,
-			nullTime(started, t), nullTime(!started, t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"))
+			nullTime(started, t), nullTime(!started, t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"),
+			event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"), positiveInt(p, "attempt", 1), event.String(p, "retryReason"))
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO tool_calls(instance_id,tool_call_id,run_id,session_id,tool_name,tool_source,tool_owner,status,started_at,ended_at,duration_ms,error_category)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,tool_call_id) DO UPDATE SET run_id=COALESCE(NULLIF(excluded.run_id,''),run_id),session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),
+	_, err := tx.ExecContext(ctx, `INSERT INTO tool_calls(instance_id,tool_call_id,run_id,session_id,tool_name,tool_source,tool_owner,status,started_at,ended_at,duration_ms,error_category,trace_id,span_id,parent_span_id,attempt,retry_reason)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,tool_call_id) DO UPDATE SET run_id=COALESCE(NULLIF(excluded.run_id,''),run_id),session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),
     tool_name=COALESCE(NULLIF(excluded.tool_name,''),tool_name),tool_source=COALESCE(NULLIF(excluded.tool_source,''),tool_source),tool_owner=COALESCE(NULLIF(excluded.tool_owner,''),tool_owner),
-    status=excluded.status,started_at=COALESCE(started_at,excluded.started_at),ended_at=COALESCE(excluded.ended_at,ended_at),duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category)`,
+    status=CASE WHEN excluded.status='active' AND status!='unknown' THEN status ELSE excluded.status END,started_at=COALESCE(started_at,excluded.started_at),
+    ended_at=COALESCE(excluded.ended_at,ended_at),duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category),
+    trace_id=COALESCE(NULLIF(excluded.trace_id,''),trace_id),span_id=COALESCE(NULLIF(excluded.span_id,''),span_id),parent_span_id=COALESCE(NULLIF(excluded.parent_span_id,''),parent_span_id),
+    attempt=MAX(attempt,excluded.attempt),retry_reason=COALESCE(NULLIF(excluded.retry_reason,''),retry_reason)`,
 		e.InstanceID, id, event.String(p, "runId"), event.String(p, "sessionId"), event.String(p, "toolName"), event.String(p, "toolSource"), event.String(p, "toolOwner"), status,
-		nullTime(started, t), nullTime(!started, t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"))
+		nullTime(started, t), nullTime(!started, t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"),
+		event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"), positiveInt(p, "attempt", 1), event.String(p, "retryReason"))
 	return err
 }
 
@@ -441,6 +469,19 @@ func nullFloat(m map[string]any, key string) any {
 		return nil
 	}
 	return event.Float(m, key)
+}
+func nullInt(m map[string]any, key string) any {
+	if _, ok := m[key]; !ok {
+		return nil
+	}
+	return int64(event.Float(m, key))
+}
+func positiveInt(m map[string]any, key string, fallback int64) int64 {
+	n := int64(event.Float(m, key))
+	if n <= 0 {
+		return fallback
+	}
+	return n
 }
 func timestamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
@@ -470,7 +511,7 @@ func (r *Repository) DBSize() int64 {
 }
 
 func (r *Repository) Count(ctx context.Context, table string) (int64, error) {
-	allowed := map[string]bool{"events": true, "sessions": true, "agent_runs": true, "subagent_runs": true, "llm_calls": true, "tool_calls": true, "mcp_calls": true, "resource_samples": true}
+	allowed := map[string]bool{"events": true, "sessions": true, "agent_runs": true, "subagent_runs": true, "llm_calls": true, "tool_calls": true, "mcp_calls": true, "retry_events": true, "resource_samples": true}
 	if !allowed[table] {
 		return 0, errors.New("invalid table")
 	}

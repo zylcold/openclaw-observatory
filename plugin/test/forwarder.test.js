@@ -14,6 +14,32 @@ test("maps diagnostics without prompt or tool content", () => {
   assert.equal(JSON.stringify(event).includes("secret"), false);
 });
 
+test("maps stable trace spans, retry metadata and LLM timing without content", () => {
+  const f = new Forwarder({ queueCapacity: 100 });
+  f.mapDiagnostic({
+    type: "model.call.completed", ts: Date.now(), runId: "run-1", sessionId: "session-1", callId: "call-1",
+    provider: "openai", model: "gpt", attempt: 2, retryReason: "rate_limit",
+    timeToFirstTokenMs: 120, generationDurationMs: 800, stopReason: "stop",
+    prompt: "private prompt", response: "private response",
+  });
+  const payload = f.queue[0].event.payload;
+  assert.equal(payload.traceId, "run-1");
+  assert.equal(payload.spanId, "call-1");
+  assert.equal(payload.parentSpanId, "run-1");
+  assert.equal(payload.attempt, 2);
+  assert.equal(payload.timeToFirstTokenMs, 120);
+  assert.equal(payload.generationDurationMs, 800);
+  assert.equal(JSON.stringify(payload).includes("private"), false);
+
+  f.mapDiagnostic({
+    type: "model.failover", ts: Date.now(), runId: "run-1", sessionId: "session-1",
+    callId: "retry-1", fromModel: "a", toModel: "b", attempt: 2, reason: "rate_limit",
+  });
+  assert.equal(f.queue[1].event.eventType, "llm.retried");
+  assert.equal(f.queue[1].event.payload.spanId, "retry-1");
+  assert.equal(f.queue[1].event.payload.reason, "rate_limit");
+});
+
 test("drops low priority first when full", () => {
   const f = new Forwarder({ queueCapacity: 100 });
   for (let i = 0; i < 100; i++) f.enqueue("gateway.heartbeat", { i }, "low");

@@ -3,14 +3,20 @@ import { loadDashboard, loadSession } from "./api.js";
 import { loadConfig, resetConfig, saveConfig } from "./config.js";
 import { destroyCharts, setChartAnimation } from "./charts.js";
 import { defaultCustomChartTitle, dimensionGroupById } from "./custom-chart-model.js";
+import {
+  chartsForDomain, domainFilterOptions, filterDashboardData, normalizeDomain,
+} from "./observability-model.js";
 import { timeFilters } from "./state.js";
 import { fetchModelPricing } from "./pricing.js";
 import { paintCharts, updateCharts, updateNonChartDOM, updateAgentTable, setRange } from "./components/modules.js";
 import { shell } from "./components/shell.js";
+import { applyAlertState, evaluateAlerts, loadAlertState, saveAlertState } from "./alert-model.js";
 
 const app = document.getElementById("app");
 let config = loadConfig();
 let filters = timeFilters("24h");
+let activeDomain = "overview";
+let viewFilters = { model: "", tool: "", status: "" };
 let data = null;
 let sessionDetail = null;
 let loading = false;
@@ -29,6 +35,7 @@ let deferredRender = false;
 let hasRenderedData = false;
 let lastRenderKey = ""; // track filter changes to force full re-render
 let connectionLost = navigator.onLine === false;
+let alertState = loadAlertState();
 let dataStale = false;
 let refreshFailures = 0;
 let streamBackoffMs = 1000;
@@ -118,12 +125,18 @@ function render({ preserveView = false, deferWhileInteracting = false } = {}) {
     setChartAnimation(!preserveView && !hasRenderedData);
     setRange(filters.range);
     document.documentElement.dataset.theme = config.theme;
-    app.innerHTML = shell({ config, data, filters, loading, error, settingsOpen, sessionDetail, connectionLost, dataStale, kpiEditorOpen, customBuilder });
+    const viewData = filterDashboardData(data, viewFilters);
+    const alerts = applyAlertState(evaluateAlerts(viewData, config), alertState);
+    const viewConfig = { ...config, customCharts: chartsForDomain(config.customCharts, activeDomain) };
+    app.innerHTML = shell({
+      config, data: viewData, filters, filterOptions: domainFilterOptions(data), viewFilters, activeDomain,
+      loading, error, settingsOpen, sessionDetail, connectionLost, dataStale, kpiEditorOpen, customBuilder, alerts,
+    });
     const interval = document.getElementById("refresh-interval");
     if (interval) interval.value = String(config.refreshInterval);
     bind();
-    if (data) requestAnimationFrame(() => {
-      try { paintCharts(data, config); } catch(e) { console.error("paintCharts error:", e); }
+    if (viewData) requestAnimationFrame(() => {
+      try { paintCharts(viewData, viewConfig); } catch(e) { console.error("paintCharts error:", e); }
       restoreView(view);
       hasRenderedData = true;
     });
@@ -141,10 +154,15 @@ function incrementalUpdate() {
   if (!data || !hasRenderedData) return false;
   const app = document.getElementById("app");
   if (!app) return false;
-  const ok = updateCharts(data, config);
+  // Domain summaries and detail tables are data-derived HTML. Re-render them
+  // together so chart and tabular values always represent the same snapshot.
+  if (app.querySelector(".domain-panel")) return false;
+  const viewData = filterDashboardData(data, viewFilters);
+  const viewConfig = { ...config, customCharts: chartsForDomain(config.customCharts, activeDomain) };
+  const ok = updateCharts(viewData, viewConfig);
   if (!ok) return false;
-  updateNonChartDOM(app, data, config);
-  updateAgentTable(app, data);
+  updateNonChartDOM(app, viewData, viewConfig);
+  updateAgentTable(app, viewData);
   return true;
 }
 
@@ -156,7 +174,7 @@ async function refresh({ keepRange = false, automatic = false, forceRender = fal
     return;
   }
   const background = Boolean(data);
-  const filterKey = `${filters.range}|${filters.instanceId}|${filters.agentId}`;
+  const filterKey = `${filters.range}|${filters.instanceId}|${filters.agentId}|${viewFilters.status}`;
   const filtersChanged = forceRender || filterKey !== lastRenderKey;
   loading = true; error = "";
   if (!keepRange) filters = timeFilters(filters.range, filters.instanceId, filters.agentId);
@@ -167,7 +185,7 @@ async function refresh({ keepRange = false, automatic = false, forceRender = fal
     if (button) button.textContent = "刷新中…";
   }
   try {
-    data = await loadDashboard(filters);
+    data = await loadDashboard({ ...filters, status: viewFilters.status });
     connectionLost = false;
     dataStale = false;
     refreshFailures = 0;
@@ -212,11 +230,39 @@ function updateConfig(next) {
 }
 
 function bind() {
+  document.querySelectorAll("[data-observability-domain]").forEach((button) => button.addEventListener("click", () => {
+    activeDomain = normalizeDomain(button.dataset.observabilityDomain);
+    customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", title: "", width: "half" };
+    writeURLState();
+    render({ preserveView: false });
+  }));
   document.querySelectorAll("[data-range]").forEach((button) => button.addEventListener("click", () => {
     filters = timeFilters(button.dataset.range, filters.instanceId, filters.agentId); writeURLState(); refresh({ keepRange: true, forceRender: true });
   }));
   document.getElementById("instance-filter")?.addEventListener("change", (event) => { filters.instanceId = event.target.value; writeURLState(); refresh({ forceRender: true }); });
   document.getElementById("agent-filter")?.addEventListener("change", (event) => { filters.agentId = event.target.value; writeURLState(); refresh({ forceRender: true }); });
+  document.getElementById("model-filter")?.addEventListener("change", (event) => {
+    viewFilters.model = event.target.value;
+    writeURLState();
+    render({ preserveView: true });
+  });
+  document.getElementById("tool-filter")?.addEventListener("change", (event) => {
+    viewFilters.tool = event.target.value;
+    writeURLState();
+    render({ preserveView: true });
+  });
+  document.getElementById("status-filter")?.addEventListener("change", (event) => {
+    viewFilters.status = event.target.value;
+    writeURLState();
+    refresh({ forceRender: true });
+  });
+  document.getElementById("context-filter-reset")?.addEventListener("click", () => {
+    const reload = Boolean(viewFilters.status);
+    viewFilters = { model: "", tool: "", status: "" };
+    writeURLState();
+    if (reload) refresh({ forceRender: true });
+    else render({ preserveView: true });
+  });
   document.getElementById("refresh")?.addEventListener("click", () => refresh());
   document.getElementById("theme-toggle")?.addEventListener("click", () => updateConfig({ ...config, theme: config.theme === "dark" ? "light" : "dark" }));
   document.getElementById("settings-toggle")?.addEventListener("click", () => { settingsOpen = true; render(); });
@@ -273,7 +319,7 @@ function bind() {
       ...config,
       customCharts: [...config.customCharts, {
         id, title, chartType: customBuilder.chartType, dataset: customBuilder.dataset,
-        dimensions: customBuilder.dimensions, metric, width,
+        dimensions: customBuilder.dimensions, metric, width, domain: activeDomain,
       }],
     });
     customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", title: "", width: "half" };
@@ -296,6 +342,30 @@ function bind() {
     render({ preserveView: true });
   }));
   document.getElementById("refresh-interval")?.addEventListener("change", (event) => updateConfig({ ...config, refreshInterval: Number(event.target.value) }));
+  document.getElementById("cost-budget")?.addEventListener("change", (event) => updateConfig({
+    ...config, thresholds: { ...config.thresholds, costBudgetUsd: Math.max(0, Number(event.target.value) || 0) },
+  }));
+  document.getElementById("session-stuck-hours")?.addEventListener("change", (event) => updateConfig({
+    ...config, thresholds: { ...config.thresholds, sessionStuckMs: Math.max(300000, (Number(event.target.value) || 1) * 3600000) },
+  }));
+  document.querySelectorAll("[data-alert-ack]").forEach((button) => button.addEventListener("click", () => {
+    alertState = saveAlertState({
+      ...alertState,
+      acknowledged: { ...alertState.acknowledged, [button.dataset.alertAck]: new Date().toISOString() },
+    });
+    render({ preserveView: true });
+  }));
+  document.querySelectorAll("[data-alert-silence]").forEach((button) => button.addEventListener("click", () => {
+    alertState = saveAlertState({
+      ...alertState,
+      silenced: { ...alertState.silenced, [button.dataset.alertSilence]: Date.now() + 3600000 },
+    });
+    render({ preserveView: true });
+  }));
+  document.getElementById("alert-state-reset")?.addEventListener("click", () => {
+    alertState = saveAlertState({ acknowledged: {}, silenced: {} });
+    render({ preserveView: true });
+  });
   document.querySelectorAll("[data-module-visible]").forEach((input) => input.addEventListener("change", () => updateConfig({ ...config, modules: config.modules.map((m) => m.id === input.dataset.moduleVisible ? { ...m, visible: input.checked } : m) })));
   document.getElementById("config-save")?.addEventListener("click", () => {
     try { updateConfig(JSON.parse(document.getElementById("config-json").value)); settingsOpen = false; render(); }
@@ -414,30 +484,47 @@ function readURLState() {
   const range = params.get("range");
   const instanceId = params.get("instance") || "";
   const agentId = params.get("agent") || "";
+  activeDomain = normalizeDomain(params.get("view") || "");
+  viewFilters = {
+    model: params.get("model") || "",
+    tool: params.get("tool") || "",
+    status: params.get("status") || "",
+  };
   // URL params take priority; fall back to localStorage; finally default
   let useRange = range;
   let useInstance = instanceId;
   let useAgent = agentId;
-  if (!useRange || !["1h", "6h", "24h", "7d", "30d"].includes(useRange)) {
-    try {
-      const saved = JSON.parse(localStorage.getItem(FILTER_KEY) || "{}");
+  try {
+    const saved = JSON.parse(localStorage.getItem(FILTER_KEY) || "{}");
+    if (!useRange || !["1h", "6h", "24h", "7d", "30d"].includes(useRange)) {
       if (saved.range && ["1h", "6h", "24h", "7d", "30d"].includes(saved.range)) useRange = saved.range;
-      if (!useInstance && saved.instanceId) useInstance = saved.instanceId;
-      if (!useAgent && saved.agentId) useAgent = saved.agentId;
-    } catch {}
-  }
+    }
+    if (!useInstance && saved.instanceId) useInstance = saved.instanceId;
+    if (!useAgent && saved.agentId) useAgent = saved.agentId;
+    if (!params.has("view") && saved.activeDomain) activeDomain = normalizeDomain(saved.activeDomain);
+    if (!params.has("model") && saved.viewFilters?.model) viewFilters.model = saved.viewFilters.model;
+    if (!params.has("tool") && saved.viewFilters?.tool) viewFilters.tool = saved.viewFilters.tool;
+    if (!params.has("status") && saved.viewFilters?.status) viewFilters.status = saved.viewFilters.status;
+  } catch {}
   filters = timeFilters(useRange || "24h", useInstance, useAgent);
 }
 
 function saveFilters() {
-  localStorage.setItem(FILTER_KEY, JSON.stringify({ range: filters.range, instanceId: filters.instanceId, agentId: filters.agentId }));
+  localStorage.setItem(FILTER_KEY, JSON.stringify({
+    range: filters.range, instanceId: filters.instanceId, agentId: filters.agentId,
+    activeDomain, viewFilters,
+  }));
 }
 
 function writeURLState() {
   const params = new URLSearchParams();
   params.set("range", filters.range);
+  params.set("view", activeDomain);
   if (filters.instanceId) params.set("instance", filters.instanceId);
   if (filters.agentId) params.set("agent", filters.agentId);
+  if (viewFilters.model) params.set("model", viewFilters.model);
+  if (viewFilters.tool) params.set("tool", viewFilters.tool);
+  if (viewFilters.status) params.set("status", viewFilters.status);
   if (sessionDetail?.sessionId) params.set("session", sessionDetail.sessionId);
   const url = `${location.pathname}?${params}`;
   history.replaceState(null, "", url);
@@ -465,7 +552,7 @@ window.addEventListener("online", () => {
 });
 
 readURLState();
-lastRenderKey = `${filters.range}|${filters.instanceId}|${filters.agentId}`;
+lastRenderKey = `${filters.range}|${filters.instanceId}|${filters.agentId}|${viewFilters.status}`;
 
 // Load session from URL if present
 const initialSession = new URLSearchParams(location.search).get("session");

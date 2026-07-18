@@ -33,13 +33,18 @@ export const KPI_METRICS = [
 ];
 
 export const DEFAULT_CONFIG = {
-  version: 2,
+  version: 3,
   theme: "dark",
   refreshInterval: 15000,
   modules: MODULES.map(([id]) => ({ id, visible: true })),
   kpiMetrics: KPI_METRICS.map(([id, , vis]) => ({ id, visible: vis })),
   customCharts: normalizeCustomCharts(DEFAULT_CUSTOM_CHARTS),
-  thresholds: { errorRateWarning: 5, errorRateCritical: 15, llmLatencyWarningMs: 5000, llmLatencyCriticalMs: 15000, costBudgetUsd: 0 },
+  thresholds: {
+    errorRateWarning: 5, errorRateCritical: 15,
+    llmLatencyWarningMs: 5000, llmLatencyCriticalMs: 15000,
+    toolP99WarningMs: 5000, toolP99CriticalMs: 15000,
+    sessionStuckMs: 3600000, costBudgetUsd: 0,
+  },
 };
 
 const KEY = "openclaw-observatory-dashboard-v3";
@@ -69,13 +74,19 @@ export function normalizeConfig(input = {}) {
   for (const [id, , vis] of KPI_METRICS) if (!seenKpis.has(id)) kpiMetrics.push({ id, visible: vis });
   const interval = Number(input.refreshInterval);
   const hasCustomCharts = Object.prototype.hasOwnProperty.call(input, "customCharts");
+  let customCharts = input.customCharts;
+  if (hasCustomCharts && Number(input.version) === 2) {
+    const existing = Array.isArray(customCharts) ? customCharts : [];
+    const existingIds = new Set(existing.map((item) => item?.id));
+    customCharts = [...existing, ...DEFAULT_CUSTOM_CHARTS.filter((item) => !existingIds.has(item.id))];
+  }
   return {
-    version: 2,
+    version: 3,
     theme: input.theme === "light" ? "light" : "dark",
     refreshInterval: [5000, 15000, 30000, 60000, 0].includes(interval) ? interval : DEFAULT_CONFIG.refreshInterval,
     modules,
     kpiMetrics,
-    customCharts: normalizeCustomCharts(input.customCharts, { useDefaults: !hasCustomCharts }),
+    customCharts: normalizeCustomCharts(customCharts, { useDefaults: !hasCustomCharts }),
     thresholds: { ...DEFAULT_CONFIG.thresholds, ...(input.thresholds || {}) },
   };
 }

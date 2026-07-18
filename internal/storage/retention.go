@@ -18,6 +18,7 @@ var retentionColumns = map[string]map[string]bool{
 	"subagent_runs":    {"started_at": true},
 	"agent_runs":       {"started_at": true},
 	"sessions":         {"COALESCE(started_at,ended_at)": true},
+	"retry_events":     {"occurred_at": true},
 }
 
 // RetentionConfig controls how old data is purged.
@@ -114,10 +115,12 @@ func (j *RetentionJob) runOnce(ctx context.Context) {
 	// 3. Optional: purge all projection tables older than AllDays.
 	if cfg.AllDays > 0 {
 		allBefore := cutoff.AddDate(0, 0, -cfg.AllDays)
-		for _, table := range []string{"llm_calls", "tool_calls", "mcp_calls", "subagent_runs", "agent_runs", "sessions"} {
+		for _, table := range []string{"llm_calls", "tool_calls", "mcp_calls", "subagent_runs", "agent_runs", "sessions", "retry_events"} {
 			col := "started_at"
 			if table == "sessions" {
 				col = "COALESCE(started_at,ended_at)"
+			} else if table == "retry_events" {
+				col = "occurred_at"
 			}
 			deleted, err := j.repo.deleteBefore(ctx, table, col, allBefore)
 			if err != nil {
@@ -181,10 +184,12 @@ func (r *Repository) RunRetentionOnce(ctx context.Context, cfg RetentionConfig) 
 
 	if cfg.AllDays > 0 {
 		before := cutoff.AddDate(0, 0, -cfg.AllDays)
-		for _, table := range []string{"llm_calls", "tool_calls", "mcp_calls", "subagent_runs", "agent_runs", "sessions"} {
+		for _, table := range []string{"llm_calls", "tool_calls", "mcp_calls", "subagent_runs", "agent_runs", "sessions", "retry_events"} {
 			col := "started_at"
 			if table == "sessions" {
 				col = "COALESCE(started_at,ended_at)"
+			} else if table == "retry_events" {
+				col = "occurred_at"
 			}
 			n, err := r.deleteBefore(ctx, table, col, before)
 			if err != nil {

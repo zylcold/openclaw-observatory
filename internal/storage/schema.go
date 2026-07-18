@@ -1,6 +1,6 @@
 package storage
 
-const CurrentSchemaVersion = 5
+const CurrentSchemaVersion = 6
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -227,4 +227,61 @@ CREATE INDEX IF NOT EXISTS idx_subagent_time ON subagent_runs(started_at,instanc
 const schemaV5 = `
 ALTER TABLE resource_samples ADD COLUMN disk_total_bytes INTEGER;
 ALTER TABLE resource_samples ADD COLUMN disk_available_bytes INTEGER;
+`
+
+const schemaV6 = `
+ALTER TABLE agent_runs ADD COLUMN trace_id TEXT;
+ALTER TABLE agent_runs ADD COLUMN span_id TEXT;
+ALTER TABLE agent_runs ADD COLUMN parent_span_id TEXT;
+
+ALTER TABLE llm_calls ADD COLUMN trace_id TEXT;
+ALTER TABLE llm_calls ADD COLUMN span_id TEXT;
+ALTER TABLE llm_calls ADD COLUMN parent_span_id TEXT;
+ALTER TABLE llm_calls ADD COLUMN time_to_first_byte_ms REAL;
+ALTER TABLE llm_calls ADD COLUMN time_to_first_token_ms REAL;
+ALTER TABLE llm_calls ADD COLUMN generation_duration_ms REAL;
+ALTER TABLE llm_calls ADD COLUMN stop_reason TEXT;
+ALTER TABLE llm_calls ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE llm_calls ADD COLUMN retry_reason TEXT;
+ALTER TABLE llm_calls ADD COLUMN request_bytes INTEGER;
+ALTER TABLE llm_calls ADD COLUMN response_bytes INTEGER;
+
+ALTER TABLE tool_calls ADD COLUMN trace_id TEXT;
+ALTER TABLE tool_calls ADD COLUMN span_id TEXT;
+ALTER TABLE tool_calls ADD COLUMN parent_span_id TEXT;
+ALTER TABLE tool_calls ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE tool_calls ADD COLUMN retry_reason TEXT;
+
+ALTER TABLE mcp_calls ADD COLUMN trace_id TEXT;
+ALTER TABLE mcp_calls ADD COLUMN span_id TEXT;
+ALTER TABLE mcp_calls ADD COLUMN parent_span_id TEXT;
+ALTER TABLE mcp_calls ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE mcp_calls ADD COLUMN retry_reason TEXT;
+
+ALTER TABLE subagent_runs ADD COLUMN trace_id TEXT;
+ALTER TABLE subagent_runs ADD COLUMN span_id TEXT;
+ALTER TABLE subagent_runs ADD COLUMN parent_span_id TEXT;
+
+CREATE TABLE IF NOT EXISTS retry_events (
+  event_id TEXT PRIMARY KEY,
+  instance_id TEXT NOT NULL,
+  session_id TEXT,
+  run_id TEXT,
+  trace_id TEXT,
+  span_id TEXT,
+  parent_span_id TEXT,
+  from_provider TEXT,
+  from_model TEXT,
+  to_provider TEXT,
+  to_model TEXT,
+  attempt INTEGER NOT NULL DEFAULT 1,
+  reason TEXT,
+  occurred_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_runs_trace ON agent_runs(instance_id,trace_id,span_id);
+CREATE INDEX IF NOT EXISTS idx_llm_trace ON llm_calls(instance_id,trace_id,span_id);
+CREATE INDEX IF NOT EXISTS idx_tools_trace ON tool_calls(instance_id,trace_id,span_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_trace ON mcp_calls(instance_id,trace_id,span_id);
+CREATE INDEX IF NOT EXISTS idx_retry_session_time ON retry_events(instance_id,session_id,occurred_at);
 `

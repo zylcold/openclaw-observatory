@@ -7,19 +7,20 @@ const metric = (id, label, value, unit = "") => ({ id, label, value, unit });
 const dimension = (id, label, value) => ({ id, label, value });
 
 export const CHART_TYPES = [
-  { id: "line", label: "折线图", description: "观察连续变化与趋势", datasets: ["overview", "agents", "models"] },
-  { id: "area", label: "面积图", description: "突出趋势与累计量级", datasets: ["overview", "agents", "models"] },
-  { id: "bar", label: "柱状图", description: "比较多个分类", datasets: ["overview", "agents", "models", "tools", "errors"] },
-  { id: "horizontalBar", label: "横向条形图", description: "适合较长分类名称", datasets: ["agents", "models", "tools", "errors"] },
-  { id: "doughnut", label: "环形图", description: "查看构成与占比", datasets: ["agents", "models", "tools", "errors"] },
-  { id: "pie", label: "饼图", description: "展示分类分布", datasets: ["agents", "models", "tools", "errors"] },
-  { id: "polarArea", label: "极区图", description: "对比分类规模", datasets: ["agents", "models", "tools", "errors"] },
-  { id: "radar", label: "雷达图", description: "查看多分类轮廓", datasets: ["agents", "models", "tools", "errors"] },
+  { id: "line", label: "折线图", description: "观察连续变化与趋势", datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+  { id: "area", label: "面积图", description: "突出趋势与累计量级", datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+  { id: "bar", label: "柱状图", description: "比较多个分类", datasets: ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"] },
+  { id: "horizontalBar", label: "横向条形图", description: "适合较长分类名称", datasets: ["agents", "sessions", "models", "tools", "errors"] },
+  { id: "doughnut", label: "环形图", description: "查看构成与占比", datasets: ["agents", "sessions", "models", "tools", "errors"] },
+  { id: "pie", label: "饼图", description: "展示分类分布", datasets: ["agents", "sessions", "models", "tools", "errors"] },
+  { id: "polarArea", label: "极区图", description: "对比分类规模", datasets: ["agents", "sessions", "models", "tools", "errors"] },
+  { id: "radar", label: "雷达图", description: "查看多分类轮廓", datasets: ["agents", "sessions", "models", "tools", "errors"] },
 ];
 
 export const DIMENSION_GROUPS = [
   {
     id: "overview",
+    domain: "overview",
     label: "运行趋势",
     description: "系统、LLM 与资源的时间序列",
     dimensions: [dimension("time", "时间", (row) => row.time)],
@@ -41,6 +42,7 @@ export const DIMENSION_GROUPS = [
   },
   {
     id: "agents",
+    domain: "agents",
     label: "Agent 运行",
     description: "按时间与 Agent 拆分运行指标",
     dimensions: [
@@ -52,10 +54,36 @@ export const DIMENSION_GROUPS = [
       metric("runs", "Runs", (row) => row.runs),
       metric("errors", "错误数", (row) => row.errors ?? row.runErrors),
       metric("durationMs", "总耗时", (row) => row.durationMs ?? row.totalDurationMs, "ms"),
+      metric("successRate", "成功率", (row) => row.successRate ?? (100 - number(row.errorRate)), "%"),
+      metric("totalTokens", "Token 总量", (row) => row.totalTokens),
+      metric("costUsd", "成本", (row) => row.costUsd, "USD"),
+      metric("toolCalls", "Tool / MCP 调用", (row) => row.toolCalls),
+    ],
+  },
+  {
+    id: "sessions",
+    domain: "sessions",
+    label: "Session",
+    description: "按时间、Agent 与状态拆分会话",
+    dimensions: [
+      dimension("time", "开始时间", (row) => row.startedAt),
+      dimension("agent", "Agent", (row) => row.agentId || "unknown"),
+      dimension("status", "状态", (row) => row.status || "unknown"),
+    ],
+    rows: (data) => data?.sessions || [],
+    metrics: [
+      metric("sessions", "Session 数", () => 1),
+      metric("messages", "Message 数", (row) => row.messageCount),
+      metric("durationMs", "持续时间", (row) => {
+        const start = Date.parse(row.startedAt);
+        const end = Date.parse(row.endedAt);
+        return Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : 0;
+      }, "ms"),
     ],
   },
   {
     id: "models",
+    domain: "models",
     label: "模型调用",
     description: "按时间、Provider 与 Model 拆分",
     dimensions: [
@@ -70,34 +98,69 @@ export const DIMENSION_GROUPS = [
       metric("inputTokens", "输入 Token", (row) => row.inputTokens),
       metric("outputTokens", "输出 Token", (row) => row.outputTokens),
       metric("cacheReadTokens", "缓存读取 Token", (row) => row.cacheReadTokens),
+      metric("cacheWriteTokens", "缓存写入 Token", (row) => row.cacheWriteTokens),
       metric("costUsd", "成本", (row) => row.costUsd, "USD"),
+      metric("averageDurationMs", "平均延迟", (row) => row.averageDurationMs, "ms"),
+      metric("errorRate", "错误率", (row) => row.errorRate ?? (number(row.requests) ? 100 * number(row.errors) / number(row.requests) : 0), "%"),
     ],
   },
   {
     id: "tools",
+    domain: "tools",
     label: "工具调用",
     description: "按来源与工具名称拆分",
     dimensions: [
+      dimension("time", "时间", (row) => row.time),
       dimension("source", "来源", (row) => row.source || "tool"),
       dimension("tool", "工具", (row) => row.tool || "unknown"),
+      dimension("agent", "Agent", (row) => row.agentId || "unknown"),
     ],
-    rows: (data) => data?.tools || [],
+    rows: (data, dimensions) => dimensions.includes("time") || dimensions.includes("agent")
+      ? data?.timeseries?.tools || []
+      : data?.tools || [],
     metrics: [
       metric("calls", "调用次数", (row) => row.calls),
       metric("errors", "错误次数", (row) => row.errors),
+      metric("failureRate", "失败率", (row) => row.failureRate ?? (number(row.calls) ? 100 * number(row.errors) / number(row.calls) : 0), "%"),
       metric("averageDurationMs", "平均耗时", (row) => row.averageDurationMs, "ms"),
+      metric("p95DurationMs", "P95", (row) => row.p95DurationMs, "ms"),
+      metric("p99DurationMs", "P99", (row) => row.p99DurationMs, "ms"),
       metric("maxDurationMs", "最大耗时", (row) => row.maxDurationMs, "ms"),
+      metric("timeouts", "Timeout", (row) => row.timeouts),
+    ],
+  },
+  {
+    id: "infrastructure",
+    domain: "infrastructure",
+    label: "基础设施",
+    description: "Observatory 采集的宿主机关键资源摘要",
+    dimensions: [dimension("time", "时间", (row) => row.time)],
+    rows: (data) => data?.timeseries?.points || [],
+    metrics: [
+      metric("averageMemoryMiB", "平均内存", (row) => number(row.averageMemoryBytes) / 1048576, "MiB"),
+      metric("maxMemoryMiB", "峰值内存", (row) => number(row.maxMemoryBytes) / 1048576, "MiB"),
+      metric("averageCpuPercent", "平均 CPU", (row) => row.averageCpuPercent, "%"),
+      metric("diskUsedPercent", "磁盘使用率", (row) => row.diskUsedPercent, "%"),
     ],
   },
   {
     id: "errors",
+    domain: "errors",
     label: "错误聚合",
     description: "按来源与错误类别拆分",
     dimensions: [
+      dimension("time", "时间", (row) => row.time),
       dimension("kind", "来源", (row) => row.kind || "unknown"),
       dimension("category", "错误类别", (row) => row.category || "unknown"),
     ],
-    rows: (data) => data?.errors || [],
+    rows: (data, dimensions) => {
+      if (!dimensions.includes("time")) return data?.errors || [];
+      return (data?.timeseries?.points || []).flatMap((row) => [
+        { ...row, kind: "Agent", errors: number(row.runErrors) },
+        { ...row, kind: "LLM", errors: number(row.llmErrors) },
+        { ...row, kind: "Tool / MCP", errors: number(row.toolErrors) },
+      ]);
+    },
     metrics: [
       metric("errors", "错误次数", (row) => row.errors),
       metric("averageDurationMs", "平均耗时", (row) => row.averageDurationMs, "ms"),
@@ -106,12 +169,28 @@ export const DIMENSION_GROUPS = [
 ];
 
 export const DEFAULT_CUSTOM_CHARTS = [
-  { id: "default-resource", title: "资源内存趋势", chartType: "area", dataset: "overview", dimensions: ["time"], metric: "averageMemoryMiB", width: "half" },
-  { id: "default-llm-requests", title: "LLM 请求趋势", chartType: "bar", dataset: "overview", dimensions: ["time"], metric: "llmRequests", width: "half" },
+  { id: "default-task-trend", title: "任务趋势", chartType: "line", dataset: "overview", dimensions: ["time"], metric: "runs", width: "half" },
+  { id: "default-token-trend", title: "Token 趋势", chartType: "area", dataset: "overview", dimensions: ["time"], metric: "totalTokens", width: "half" },
+  { id: "default-cost-trend", title: "成本趋势", chartType: "bar", dataset: "overview", dimensions: ["time"], metric: "costUsd", width: "half" },
+  { id: "default-status-share", title: "Session 状态分布", chartType: "doughnut", dataset: "sessions", dimensions: ["status"], metric: "sessions", width: "half", domain: "overview" },
+  { id: "default-agent-activity", title: "Agent 活跃趋势", chartType: "area", dataset: "agents", dimensions: ["time", "agent"], metric: "runs", width: "full" },
+  { id: "default-agent-token", title: "Agent Token 排行", chartType: "horizontalBar", dataset: "agents", dimensions: ["agent"], metric: "totalTokens", width: "half" },
+  { id: "default-agent-success", title: "Agent 成功率", chartType: "bar", dataset: "agents", dimensions: ["agent"], metric: "successRate", width: "half" },
+  { id: "default-session-trend", title: "Session 趋势", chartType: "line", dataset: "sessions", dimensions: ["time", "status"], metric: "sessions", width: "full" },
+  { id: "default-session-duration", title: "Session 耗时对比", chartType: "bar", dataset: "sessions", dimensions: ["agent"], metric: "durationMs", width: "half" },
+  { id: "default-session-messages", title: "Message 分布", chartType: "doughnut", dataset: "sessions", dimensions: ["agent"], metric: "messages", width: "half" },
   { id: "default-model-tokens", title: "各模型 Token 趋势", chartType: "area", dataset: "models", dimensions: ["time", "model"], metric: "totalTokens", width: "full" },
-  { id: "default-token-share", title: "Token 模型占比", chartType: "doughnut", dataset: "models", dimensions: ["model"], metric: "totalTokens", width: "half" },
-  { id: "default-tools", title: "工具调用排行", chartType: "horizontalBar", dataset: "tools", dimensions: ["tool"], metric: "calls", width: "half" },
-  { id: "default-agents", title: "Agent Runs 对比", chartType: "bar", dataset: "agents", dimensions: ["agent"], metric: "runs", width: "full" },
+  { id: "default-model-cost", title: "模型成本排行", chartType: "horizontalBar", dataset: "models", dimensions: ["model"], metric: "costUsd", width: "half" },
+  { id: "default-model-latency", title: "模型延迟排行", chartType: "bar", dataset: "models", dimensions: ["model"], metric: "averageDurationMs", width: "half" },
+  { id: "default-tool-trend", title: "Tool / MCP 调用趋势", chartType: "line", dataset: "tools", dimensions: ["time", "tool"], metric: "calls", width: "full" },
+  { id: "default-tools", title: "调用量 Top N", chartType: "horizontalBar", dataset: "tools", dimensions: ["tool"], metric: "calls", width: "half" },
+  { id: "default-tool-latency", title: "P95 耗时 Top N", chartType: "bar", dataset: "tools", dimensions: ["tool"], metric: "p95DurationMs", width: "half" },
+  { id: "default-infra-resource", title: "内存趋势", chartType: "area", dataset: "infrastructure", dimensions: ["time"], metric: "averageMemoryMiB", width: "half" },
+  { id: "default-infra-cpu", title: "CPU 趋势", chartType: "line", dataset: "infrastructure", dimensions: ["time"], metric: "averageCpuPercent", width: "half" },
+  { id: "default-infra-disk", title: "磁盘使用率", chartType: "line", dataset: "infrastructure", dimensions: ["time"], metric: "diskUsedPercent", width: "full" },
+  { id: "default-error-trend", title: "错误趋势", chartType: "area", dataset: "errors", dimensions: ["time", "kind"], metric: "errors", width: "full" },
+  { id: "default-error-share", title: "错误类型分布", chartType: "doughnut", dataset: "errors", dimensions: ["kind"], metric: "errors", width: "half" },
+  { id: "default-error-category", title: "异常类别排行", chartType: "horizontalBar", dataset: "errors", dimensions: ["category"], metric: "errors", width: "half" },
 ];
 
 const chartTypeMap = new Map(CHART_TYPES.map((item) => [item.id, item]));
@@ -136,6 +215,10 @@ export function metricById(groupId, metricId) {
 export function suitableDimensionGroups(chartTypeId) {
   const allowed = new Set(chartTypeById(chartTypeId)?.datasets || []);
   return DIMENSION_GROUPS.filter((group) => allowed.has(group.id));
+}
+
+export function suitableDimensionGroupsForDomain(chartTypeId, domain) {
+  return suitableDimensionGroups(chartTypeId).filter((group) => group.domain === domain);
 }
 
 export function defaultCustomChartTitle(groupId, dimensionIds, metricId) {
@@ -171,6 +254,7 @@ export function normalizeCustomCharts(input, { useDefaults = false } = {}) {
       dimensions,
       metric: item.metric,
       width: item.width === "full" ? "full" : "half",
+      domain: String(item.domain || group.domain || "overview"),
     });
   }
   return result;

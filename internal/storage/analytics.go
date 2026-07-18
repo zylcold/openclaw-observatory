@@ -12,11 +12,12 @@ func analyticsArgs(o ListOptions) []any {
 		sql.Named("to", o.To),
 		sql.Named("instance", o.InstanceID),
 		sql.Named("agent", o.AgentID),
+		sql.Named("status", o.Status),
 	}
 }
 
 const runAgentsCTE = `run_agents AS (
-  SELECT ar.instance_id,ar.run_id,ar.session_id,ar.status,ar.started_at,ar.ended_at,ar.duration_ms,ar.error_category,
+  SELECT ar.instance_id,ar.run_id,ar.session_id,ar.status,ar.started_at,ar.ended_at,ar.duration_ms,ar.error_category,ar.trace_id,ar.span_id,ar.parent_span_id,
     COALESCE(NULLIF(ar.agent_id,''),NULLIF(sr.agent_id,''),NULLIF(s.agent_id,''),'unknown') AS agent_id
   FROM agent_runs ar
   LEFT JOIN sessions s ON s.instance_id=ar.instance_id AND s.session_id=ar.session_id
@@ -27,12 +28,12 @@ const runAgentsCTE = `run_agents AS (
 // tables, keeping the downstream aggregate CTEs proportional to the selected
 // dashboard range rather than the full agent_runs table.
 const agentStatsRunAgentsCTE = `filtered_agent_runs AS (
-  SELECT instance_id,run_id,session_id,status,started_at,ended_at,duration_ms,error_category,agent_id
+  SELECT instance_id,run_id,session_id,status,started_at,ended_at,duration_ms,error_category,agent_id,trace_id,span_id,parent_span_id
   FROM agent_runs
   WHERE (@instance='' OR instance_id=@instance)
     AND (@from='' OR started_at>=@from) AND (@to='' OR started_at<=@to)
 ), run_agents AS (
-  SELECT ar.instance_id,ar.run_id,ar.session_id,ar.status,ar.started_at,ar.ended_at,ar.duration_ms,ar.error_category,
+  SELECT ar.instance_id,ar.run_id,ar.session_id,ar.status,ar.started_at,ar.ended_at,ar.duration_ms,ar.error_category,ar.trace_id,ar.span_id,ar.parent_span_id,
     COALESCE(NULLIF(ar.agent_id,''),NULLIF(sr.agent_id,''),NULLIF(s.agent_id,''),'unknown') AS agent_id
   FROM filtered_agent_runs ar
   LEFT JOIN sessions s ON s.instance_id=ar.instance_id AND s.session_id=ar.session_id
@@ -41,9 +42,9 @@ const agentStatsRunAgentsCTE = `filtered_agent_runs AS (
 
 func (r *Repository) AgentStats(ctx context.Context, opts ListOptions) ([]map[string]any, error) {
 	q := `WITH ` + agentStatsRunAgentsCTE + `,
-  filtered_runs AS (
-    SELECT * FROM run_agents
-    WHERE (@agent='' OR agent_id=@agent)
+	  filtered_runs AS (
+	    SELECT * FROM run_agents
+	    WHERE (@agent='' OR agent_id=@agent) AND (@status='' OR status=@status)
   ),
   llm_by_run AS (
     SELECT l.instance_id,l.run_id,COUNT(*) AS requests,
@@ -67,9 +68,12 @@ func (r *Repository) AgentStats(ctx context.Context, opts ListOptions) ([]map[st
       SUM(COALESCE(duration_ms,0)) AS duration_ms
     FROM tool_events GROUP BY instance_id,run_id
   )
-  SELECT f.agent_id AS agentId,COUNT(*) AS runs,
-    SUM(CASE WHEN f.status='failed' THEN 1 ELSE 0 END) AS runErrors,
-    100.0*SUM(CASE WHEN f.status='failed' THEN 1 ELSE 0 END)/COUNT(*) AS errorRate,
+	  SELECT f.agent_id AS agentId,COUNT(*) AS runs,
+	    SUM(CASE WHEN f.status='failed' THEN 1 ELSE 0 END) AS runErrors,
+	    SUM(CASE WHEN f.status='completed' THEN 1 ELSE 0 END) AS completedRuns,
+	    SUM(CASE WHEN f.status='active' THEN 1 ELSE 0 END) AS activeRuns,
+	    100.0*SUM(CASE WHEN f.status='failed' THEN 1 ELSE 0 END)/COUNT(*) AS errorRate,
+	    100.0*SUM(CASE WHEN f.status='completed' THEN 1 ELSE 0 END)/COUNT(*) AS successRate,
     SUM(COALESCE(f.duration_ms,0)) AS totalDurationMs,AVG(f.duration_ms) AS averageDurationMs,
     SUM(COALESCE(l.requests,0)) AS llmRequests,SUM(COALESCE(l.errors,0)) AS llmErrors,
     SUM(COALESCE(l.input_tokens,0)) AS inputTokens,SUM(COALESCE(l.output_tokens,0)) AS outputTokens,
@@ -87,34 +91,60 @@ func (r *Repository) AgentStats(ctx context.Context, opts ListOptions) ([]map[st
 func (r *Repository) ToolStats(ctx context.Context, opts ListOptions) ([]map[string]any, error) {
 	q := `WITH ` + runAgentsCTE + `,
   tool_events AS (
-    SELECT t.instance_id,t.run_id,t.tool_name AS tool,t.status,t.duration_ms,t.started_at,'tool' AS source
+    SELECT t.instance_id,t.run_id,t.tool_name AS tool,t.status,t.duration_ms,t.started_at,t.error_category,t.attempt,t.retry_reason,'tool' AS source
     FROM tool_calls t
     UNION ALL
-    SELECT m.instance_id,m.run_id,m.tool_name AS tool,m.status,m.duration_ms,m.started_at,'mcp' AS source
+    SELECT m.instance_id,m.run_id,m.tool_name AS tool,m.status,m.duration_ms,m.started_at,m.error_category,m.attempt,m.retry_reason,'mcp' AS source
     FROM mcp_calls m
+  ),
+	  filtered_events AS (
+    SELECT e.*,COALESCE(r.agent_id,'unknown') AS agent_id
+    FROM tool_events e LEFT JOIN run_agents r ON r.instance_id=e.instance_id AND r.run_id=e.run_id
+    WHERE (@instance='' OR e.instance_id=@instance)
+	      AND (@from='' OR e.started_at>=@from) AND (@to='' OR e.started_at<=@to)
+	      AND (@agent='' OR r.agent_id=@agent)
+	      AND (@status='' OR e.status=@status)
+  ),
+  ranked AS (
+    SELECT *,
+      ROW_NUMBER() OVER (PARTITION BY source,tool ORDER BY COALESCE(duration_ms,0)) AS duration_rank,
+      COUNT(*) OVER (PARTITION BY source,tool) AS duration_count
+    FROM filtered_events
   )
-  SELECT e.source,COALESCE(NULLIF(e.tool,''),'unknown') AS tool,COUNT(*) AS calls,
-    SUM(CASE WHEN e.status='failed' THEN 1 ELSE 0 END) AS errors,
-    AVG(e.duration_ms) AS averageDurationMs,MAX(e.duration_ms) AS maxDurationMs
-  FROM tool_events e LEFT JOIN run_agents r ON r.instance_id=e.instance_id AND r.run_id=e.run_id
-  WHERE (@instance='' OR e.instance_id=@instance)
-    AND (@from='' OR e.started_at>=@from) AND (@to='' OR e.started_at<=@to)
-    AND (@agent='' OR r.agent_id=@agent)
-  GROUP BY e.source,e.tool ORDER BY calls DESC LIMIT 200`
+  SELECT source,COALESCE(NULLIF(tool,''),'unknown') AS tool,COUNT(*) AS calls,
+	    SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS errors,
+	    SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS active,
+	    100.0*SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END)/COUNT(*) AS failureRate,
+	    100.0*SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END)/COUNT(*) AS successRate,
+    AVG(duration_ms) AS averageDurationMs,MAX(duration_ms) AS maxDurationMs,
+    MAX(CASE WHEN duration_rank=CAST((duration_count-1)*0.95 AS INTEGER)+1 THEN duration_ms END) AS p95DurationMs,
+    MAX(CASE WHEN duration_rank=CAST((duration_count-1)*0.99 AS INTEGER)+1 THEN duration_ms END) AS p99DurationMs,
+    SUM(CASE WHEN LOWER(COALESCE(error_category,'')) LIKE '%timeout%' THEN 1 ELSE 0 END) AS timeouts,
+    SUM(CASE WHEN COALESCE(attempt,1)>1 OR COALESCE(retry_reason,'')!='' THEN 1 ELSE 0 END) AS retries
+  FROM ranked
+  GROUP BY source,tool ORDER BY calls DESC LIMIT 200`
 	return queryMaps(ctx, r.db, q, analyticsArgs(opts)...)
 }
 
 func (r *Repository) ModelStats(ctx context.Context, opts ListOptions) ([]map[string]any, error) {
 	q := `WITH ` + runAgentsCTE + `
-  SELECT COALESCE(NULLIF(l.provider,''),'unknown') AS provider,COALESCE(NULLIF(l.model,''),'unknown') AS model,
-    COUNT(*) AS requests,SUM(CASE WHEN l.status='failed' THEN 1 ELSE 0 END) AS errors,
-    SUM(l.input_tokens) AS inputTokens,SUM(l.output_tokens) AS outputTokens,
-    SUM(l.cache_read_tokens) AS cacheReadTokens,SUM(l.cache_write_tokens) AS cacheWriteTokens,
-    SUM(l.cost_usd) AS costUsd,AVG(l.duration_ms) AS averageDurationMs,MAX(l.duration_ms) AS maxDurationMs
+	  SELECT COALESCE(NULLIF(l.provider,''),'unknown') AS provider,COALESCE(NULLIF(l.model,''),'unknown') AS model,
+	    COUNT(*) AS requests,SUM(CASE WHEN l.status='failed' THEN 1 ELSE 0 END) AS errors,
+	    SUM(CASE WHEN l.status='active' THEN 1 ELSE 0 END) AS active,
+	    100.0*SUM(CASE WHEN l.status='failed' THEN 1 ELSE 0 END)/COUNT(*) AS errorRate,
+	    100.0*SUM(CASE WHEN l.status='completed' THEN 1 ELSE 0 END)/COUNT(*) AS successRate,
+	    SUM(l.input_tokens) AS inputTokens,SUM(l.output_tokens) AS outputTokens,
+	    SUM(l.cache_read_tokens) AS cacheReadTokens,SUM(l.cache_write_tokens) AS cacheWriteTokens,
+	    SUM(l.cost_usd) AS costUsd,AVG(l.duration_ms) AS averageDurationMs,MAX(l.duration_ms) AS maxDurationMs,
+	    AVG(l.time_to_first_byte_ms) AS averageTimeToFirstByteMs,
+	    AVG(l.time_to_first_token_ms) AS averageTimeToFirstTokenMs,
+	    CASE WHEN SUM(COALESCE(l.generation_duration_ms,0))>0 THEN 1000.0*SUM(l.output_tokens)/SUM(l.generation_duration_ms) END AS generationTokensPerSecond,
+	    CASE WHEN SUM(COALESCE(l.duration_ms,0))>0 THEN 1000.0*SUM(l.output_tokens)/SUM(l.duration_ms) ELSE 0 END AS outputTokensPerSecond
   FROM llm_calls l LEFT JOIN run_agents r ON r.instance_id=l.instance_id AND r.run_id=l.run_id
-  WHERE (@instance='' OR l.instance_id=@instance)
-    AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to)
-    AND (@agent='' OR r.agent_id=@agent)
+	  WHERE (@instance='' OR l.instance_id=@instance)
+	    AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to)
+	    AND (@agent='' OR r.agent_id=@agent)
+	    AND (@status='' OR l.status=@status)
   GROUP BY l.provider,l.model
   ORDER BY SUM(l.input_tokens+l.output_tokens+l.cache_read_tokens+l.cache_write_tokens) DESC,requests DESC LIMIT 200`
 	return queryMaps(ctx, r.db, q, analyticsArgs(opts)...)
@@ -130,9 +160,10 @@ func (r *Repository) ListLLMCalls(ctx context.Context, opts ListOptions) ([]map[
     l.cache_read_tokens AS cacheReadTokens,l.cache_write_tokens AS cacheWriteTokens,
     l.input_tokens+l.output_tokens+l.cache_read_tokens+l.cache_write_tokens AS totalTokens,l.cost_usd AS costUsd
   FROM llm_calls l LEFT JOIN run_agents r ON r.instance_id=l.instance_id AND r.run_id=l.run_id
-  WHERE (@instance='' OR l.instance_id=@instance)
-    AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to)
-    AND (@agent='' OR r.agent_id=@agent)
+	  WHERE (@instance='' OR l.instance_id=@instance)
+	    AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to)
+	    AND (@agent='' OR r.agent_id=@agent)
+	    AND (@status='' OR l.status=@status)
   ORDER BY COALESCE(l.started_at,l.ended_at) DESC LIMIT @limit`
 	return queryMaps(ctx, r.db, q, args...)
 }
@@ -145,9 +176,10 @@ func (r *Repository) ListMCPCalls(ctx context.Context, opts ListOptions) ([]map[
     COALESCE(r.agent_id,'unknown') AS agentId,m.tool_name AS toolName,m.owner,m.status,
     m.started_at AS startedAt,m.ended_at AS endedAt,m.duration_ms AS durationMs,m.error_category AS errorCategory
   FROM mcp_calls m LEFT JOIN run_agents r ON r.instance_id=m.instance_id AND r.run_id=m.run_id
-  WHERE (@instance='' OR m.instance_id=@instance)
-    AND (@from='' OR m.started_at>=@from) AND (@to='' OR m.started_at<=@to)
-    AND (@agent='' OR r.agent_id=@agent)
+	  WHERE (@instance='' OR m.instance_id=@instance)
+	    AND (@from='' OR m.started_at>=@from) AND (@to='' OR m.started_at<=@to)
+	    AND (@agent='' OR r.agent_id=@agent)
+	    AND (@status='' OR m.status=@status)
   ORDER BY COALESCE(m.started_at,m.ended_at) DESC LIMIT @limit`
 	return queryMaps(ctx, r.db, q, args...)
 }
@@ -159,9 +191,10 @@ func (r *Repository) ListSubagentRuns(ctx context.Context, opts ListOptions) ([]
     child_session_hash AS childSessionHash,COALESCE(NULLIF(agent_id,''),'unknown') AS agentId,mode,provider,model,status,
     started_at AS startedAt,ended_at AS endedAt,outcome
   FROM subagent_runs
-  WHERE (@instance='' OR instance_id=@instance)
-    AND (@from='' OR started_at>=@from) AND (@to='' OR started_at<=@to)
-    AND (@agent='' OR COALESCE(NULLIF(agent_id,''),'unknown')=@agent)
+	  WHERE (@instance='' OR instance_id=@instance)
+	    AND (@from='' OR started_at>=@from) AND (@to='' OR started_at<=@to)
+	    AND (@agent='' OR COALESCE(NULLIF(agent_id,''),'unknown')=@agent)
+	    AND (@status='' OR status=@status)
   ORDER BY COALESCE(started_at,ended_at) DESC LIMIT @limit`
 	return queryMaps(ctx, r.db, q, args...)
 }
@@ -180,14 +213,58 @@ func (r *Repository) ErrorStats(ctx context.Context, opts ListOptions) ([]map[st
     UNION ALL
     SELECT m.instance_id,COALESCE(r.agent_id,'unknown'),'mcp',COALESCE(NULLIF(m.error_category,''),'unknown'),m.started_at,m.duration_ms
       FROM mcp_calls m LEFT JOIN run_agents r ON r.instance_id=m.instance_id AND r.run_id=m.run_id WHERE m.status='failed'
+    UNION ALL
+    SELECT e.instance_id,'unknown','system',e.event_type,e.occurred_at,NULL
+      FROM events e WHERE e.event_type IN ('gateway.crashed','monitor.events_dropped','monitor.plugin_error')
   )
   SELECT kind,category,COUNT(*) AS errors,AVG(duration_ms) AS averageDurationMs,MAX(started_at) AS lastOccurredAt
   FROM error_events
-  WHERE (@instance='' OR instance_id=@instance)
-    AND (@from='' OR started_at>=@from) AND (@to='' OR started_at<=@to)
-    AND (@agent='' OR agent_id=@agent)
+	  WHERE (@instance='' OR instance_id=@instance)
+	    AND (@from='' OR started_at>=@from) AND (@to='' OR started_at<=@to)
+	    AND (@agent='' OR agent_id=@agent)
+	    AND (@status='' OR @status='failed')
   GROUP BY kind,category ORDER BY errors DESC,lastOccurredAt DESC LIMIT 200`
 	return queryMaps(ctx, r.db, q, analyticsArgs(opts)...)
+}
+
+func (r *Repository) RecentAnomalies(ctx context.Context, opts ListOptions) ([]map[string]any, error) {
+	o := opts.normalized()
+	args := append(analyticsArgs(o), sql.Named("limit", o.Limit))
+	q := `WITH ` + runAgentsCTE + `,
+  anomalies AS (
+    SELECT l.instance_id,'llm' AS kind,l.call_id AS id,l.session_id,l.run_id,COALESCE(r.agent_id,'unknown') AS agent_id,
+      COALESCE(NULLIF(l.model,''),'unknown') AS label,COALESCE(NULLIF(l.error_category,''),'unknown') AS category,
+      COALESCE(l.ended_at,l.started_at) AS occurred_at,l.duration_ms,
+      COALESCE(NULLIF(l.trace_id,''),NULLIF(r.trace_id,''),l.run_id) AS trace_id,COALESCE(NULLIF(l.span_id,''),l.call_id) AS span_id
+    FROM llm_calls l LEFT JOIN run_agents r ON r.instance_id=l.instance_id AND r.run_id=l.run_id WHERE l.status='failed'
+    UNION ALL
+    SELECT t.instance_id,'tool',t.tool_call_id,t.session_id,t.run_id,COALESCE(r.agent_id,'unknown'),
+      COALESCE(NULLIF(t.tool_name,''),'unknown'),COALESCE(NULLIF(t.error_category,''),'unknown'),COALESCE(t.ended_at,t.started_at),t.duration_ms,
+      COALESCE(NULLIF(t.trace_id,''),NULLIF(r.trace_id,''),t.run_id),COALESCE(NULLIF(t.span_id,''),t.tool_call_id)
+    FROM tool_calls t LEFT JOIN run_agents r ON r.instance_id=t.instance_id AND r.run_id=t.run_id WHERE t.status='failed'
+    UNION ALL
+    SELECT m.instance_id,'mcp',m.call_id,m.session_id,m.run_id,COALESCE(r.agent_id,'unknown'),
+      COALESCE(NULLIF(m.tool_name,''),'unknown'),COALESCE(NULLIF(m.error_category,''),'unknown'),COALESCE(m.ended_at,m.started_at),m.duration_ms,
+      COALESCE(NULLIF(m.trace_id,''),NULLIF(r.trace_id,''),m.run_id),COALESCE(NULLIF(m.span_id,''),m.call_id)
+    FROM mcp_calls m LEFT JOIN run_agents r ON r.instance_id=m.instance_id AND r.run_id=m.run_id WHERE m.status='failed'
+    UNION ALL
+    SELECT ar.instance_id,'run',ar.run_id,ar.session_id,ar.run_id,COALESCE(ar.agent_id,'unknown'),
+      COALESCE(NULLIF(ar.model,''),ar.run_id),COALESCE(NULLIF(ar.error_category,''),'unknown'),COALESCE(ar.ended_at,ar.started_at),ar.duration_ms,
+      COALESCE(NULLIF(ar.trace_id,''),ar.run_id),COALESCE(NULLIF(ar.span_id,''),ar.run_id)
+    FROM agent_runs ar WHERE ar.status='failed'
+    UNION ALL
+    SELECT e.instance_id,'system',e.event_id,NULL,NULL,'unknown',e.event_type,
+      COALESCE(NULLIF(CAST(json_extract(e.payload_json,'$.reason') AS TEXT),''),e.event_type),e.occurred_at,NULL,NULL,NULL
+    FROM events e WHERE e.event_type IN ('gateway.crashed','monitor.events_dropped','monitor.plugin_error')
+  )
+  SELECT kind,id,session_id AS sessionId,run_id AS runId,agent_id AS agentId,label,category,
+    occurred_at AS occurredAt,duration_ms AS durationMs,trace_id AS traceId,span_id AS spanId
+  FROM anomalies
+  WHERE (@instance='' OR instance_id=@instance)
+    AND (@from='' OR occurred_at>=@from) AND (@to='' OR occurred_at<=@to)
+    AND (@agent='' OR agent_id=@agent)
+  ORDER BY occurred_at DESC,id DESC LIMIT @limit`
+	return queryMaps(ctx, r.db, q, args...)
 }
 
 func (r *Repository) TimeSeries(ctx context.Context, opts ListOptions, bucketSeconds int64) (map[string]any, error) {
@@ -206,26 +283,30 @@ func (r *Repository) TimeSeries(ctx context.Context, opts ListOptions, bucketSec
       COUNT(*) AS runs,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS run_errors,SUM(COALESCE(duration_ms,0)) AS run_duration,
       0 AS llm_requests,0 AS llm_errors,0 AS input_tokens,0 AS output_tokens,0 AS cache_read,0 AS cache_write,0 AS cost_usd,0 AS llm_duration,0 AS llm_duration_count,
       0 AS tool_calls,0 AS tool_errors,0 AS memory_avg,0 AS memory_max,0 AS cpu_avg,0 AS disk_total,0 AS disk_available
-    FROM run_agents WHERE (@instance='' OR instance_id=@instance)
-      AND (@from='' OR started_at>=@from) AND (@to='' OR started_at<=@to) AND (@agent='' OR agent_id=@agent)
+	    FROM run_agents WHERE (@instance='' OR instance_id=@instance)
+	      AND (@from='' OR started_at>=@from) AND (@to='' OR started_at<=@to) AND (@agent='' OR agent_id=@agent)
+	      AND (@status='' OR status=@status)
     GROUP BY bucket
     UNION ALL
     SELECT CAST(unixepoch(l.started_at)/@bucket AS INTEGER)*@bucket,0,0,0,
       COUNT(*),SUM(CASE WHEN l.status='failed' THEN 1 ELSE 0 END),SUM(l.input_tokens),SUM(l.output_tokens),SUM(l.cache_read_tokens),SUM(l.cache_write_tokens),SUM(l.cost_usd),SUM(COALESCE(l.duration_ms,0)),COUNT(l.duration_ms),
       0,0,0,0,0,0,0
     FROM llm_calls l LEFT JOIN run_agents r ON r.instance_id=l.instance_id AND r.run_id=l.run_id
-    WHERE (@instance='' OR l.instance_id=@instance)
-      AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to) AND (@agent='' OR r.agent_id=@agent)
+	    WHERE (@instance='' OR l.instance_id=@instance)
+	      AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to) AND (@agent='' OR r.agent_id=@agent)
+	      AND (@status='' OR l.status=@status)
     GROUP BY 1
     UNION ALL
     SELECT bucket,0,0,0,0,0,0,0,0,0,0,0,0,COUNT(*),SUM(failed),0,0,0,0,0 FROM (
       SELECT CAST(unixepoch(t.started_at)/@bucket AS INTEGER)*@bucket AS bucket,CASE WHEN t.status='failed' THEN 1 ELSE 0 END AS failed
-        FROM tool_calls t LEFT JOIN run_agents r ON r.instance_id=t.instance_id AND r.run_id=t.run_id
-        WHERE (@instance='' OR t.instance_id=@instance) AND (@from='' OR t.started_at>=@from) AND (@to='' OR t.started_at<=@to) AND (@agent='' OR r.agent_id=@agent)
-      UNION ALL
-      SELECT CAST(unixepoch(m.started_at)/@bucket AS INTEGER)*@bucket,CASE WHEN m.status='failed' THEN 1 ELSE 0 END
-        FROM mcp_calls m LEFT JOIN run_agents r ON r.instance_id=m.instance_id AND r.run_id=m.run_id
-        WHERE (@instance='' OR m.instance_id=@instance) AND (@from='' OR m.started_at>=@from) AND (@to='' OR m.started_at<=@to) AND (@agent='' OR r.agent_id=@agent)
+	        FROM tool_calls t LEFT JOIN run_agents r ON r.instance_id=t.instance_id AND r.run_id=t.run_id
+	        WHERE (@instance='' OR t.instance_id=@instance) AND (@from='' OR t.started_at>=@from) AND (@to='' OR t.started_at<=@to) AND (@agent='' OR r.agent_id=@agent)
+	          AND (@status='' OR t.status=@status)
+	      UNION ALL
+	      SELECT CAST(unixepoch(m.started_at)/@bucket AS INTEGER)*@bucket,CASE WHEN m.status='failed' THEN 1 ELSE 0 END
+	        FROM mcp_calls m LEFT JOIN run_agents r ON r.instance_id=m.instance_id AND r.run_id=m.run_id
+	        WHERE (@instance='' OR m.instance_id=@instance) AND (@from='' OR m.started_at>=@from) AND (@to='' OR m.started_at<=@to) AND (@agent='' OR r.agent_id=@agent)
+	          AND (@status='' OR m.status=@status)
     ) GROUP BY bucket
     UNION ALL
     SELECT CAST(unixepoch(sampled_at)/@bucket AS INTEGER)*@bucket,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -254,8 +335,9 @@ func (r *Repository) TimeSeries(ctx context.Context, opts ListOptions, bucketSec
     COUNT(*) AS requests,SUM(l.input_tokens) AS inputTokens,SUM(l.output_tokens) AS outputTokens,
     SUM(l.cache_read_tokens) AS cacheReadTokens,SUM(l.cache_write_tokens) AS cacheWriteTokens,SUM(l.cost_usd) AS costUsd
   FROM llm_calls l LEFT JOIN run_agents r ON r.instance_id=l.instance_id AND r.run_id=l.run_id
-  WHERE (@instance='' OR l.instance_id=@instance)
-    AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to) AND (@agent='' OR r.agent_id=@agent)
+	  WHERE (@instance='' OR l.instance_id=@instance)
+	    AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to) AND (@agent='' OR r.agent_id=@agent)
+	    AND (@status='' OR l.status=@status)
   GROUP BY 1,l.provider,l.model ORDER BY 1,requests DESC`
 	models, err := queryMaps(ctx, r.db, modelQuery, args...)
 	if err != nil {
@@ -265,10 +347,52 @@ func (r *Repository) TimeSeries(ctx context.Context, opts ListOptions, bucketSec
 	agentQuery := `WITH ` + runAgentsCTE + `
   SELECT strftime('%Y-%m-%dT%H:%M:%SZ',CAST(unixepoch(started_at)/@bucket AS INTEGER)*@bucket,'unixepoch') AS time,
     agent_id AS agentId,COUNT(*) AS runs,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS errors,SUM(COALESCE(duration_ms,0)) AS durationMs
-  FROM run_agents WHERE (@instance='' OR instance_id=@instance)
-    AND (@from='' OR started_at>=@from) AND (@to='' OR started_at<=@to) AND (@agent='' OR agent_id=@agent)
+	  FROM run_agents WHERE (@instance='' OR instance_id=@instance)
+	    AND (@from='' OR started_at>=@from) AND (@to='' OR started_at<=@to) AND (@agent='' OR agent_id=@agent)
+	    AND (@status='' OR status=@status)
   GROUP BY 1,agent_id ORDER BY 1,runs DESC`
 	agents, err := queryMaps(ctx, r.db, agentQuery, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	toolQuery := `WITH ` + runAgentsCTE + `,
+  tool_events AS (
+    SELECT t.instance_id,t.run_id,t.tool_name AS tool,t.status,t.duration_ms,t.started_at,t.error_category,'tool' AS source
+    FROM tool_calls t
+    UNION ALL
+    SELECT m.instance_id,m.run_id,m.tool_name AS tool,m.status,m.duration_ms,m.started_at,m.error_category,'mcp' AS source
+    FROM mcp_calls m
+  ),
+  filtered_events AS (
+    SELECT CAST(unixepoch(e.started_at)/@bucket AS INTEGER)*@bucket AS bucket,
+      e.source,COALESCE(NULLIF(e.tool,''),'unknown') AS tool,COALESCE(r.agent_id,'unknown') AS agent_id,
+      e.status,e.duration_ms,e.error_category
+    FROM tool_events e LEFT JOIN run_agents r ON r.instance_id=e.instance_id AND r.run_id=e.run_id
+    WHERE (@instance='' OR e.instance_id=@instance)
+      AND (@from='' OR e.started_at>=@from) AND (@to='' OR e.started_at<=@to)
+      AND (@agent='' OR r.agent_id=@agent)
+      AND (@status='' OR e.status=@status)
+  ),
+  ranked AS (
+    SELECT *,
+      ROW_NUMBER() OVER (PARTITION BY bucket,source,tool,agent_id ORDER BY COALESCE(duration_ms,0)) AS duration_rank,
+      COUNT(*) OVER (PARTITION BY bucket,source,tool,agent_id) AS duration_count
+    FROM filtered_events
+  )
+  SELECT strftime('%Y-%m-%dT%H:%M:%SZ',bucket,'unixepoch') AS time,
+    source,tool,agent_id AS agentId,COUNT(*) AS calls,
+    SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS errors,
+    SUM(CASE WHEN status='active' THEN 1 ELSE 0 END) AS active,
+    100.0*SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END)/COUNT(*) AS failureRate,
+    100.0*SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END)/COUNT(*) AS successRate,
+    AVG(duration_ms) AS averageDurationMs,MAX(duration_ms) AS maxDurationMs,
+    MAX(CASE WHEN duration_rank=CAST((duration_count-1)*0.95 AS INTEGER)+1 THEN duration_ms END) AS p95DurationMs,
+    MAX(CASE WHEN duration_rank=CAST((duration_count-1)*0.99 AS INTEGER)+1 THEN duration_ms END) AS p99DurationMs,
+    SUM(CASE WHEN LOWER(COALESCE(error_category,'')) LIKE '%timeout%' THEN 1 ELSE 0 END) AS timeouts
+  FROM ranked
+  GROUP BY bucket,source,tool,agent_id ORDER BY bucket,calls DESC`
+	tools, err := queryMaps(ctx, r.db, toolQuery, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -279,6 +403,7 @@ func (r *Repository) TimeSeries(ctx context.Context, opts ListOptions, bucketSec
 		"points":        points,
 		"models":        models,
 		"agents":        agents,
+		"tools":         tools,
 	}, nil
 }
 
@@ -300,6 +425,7 @@ func (r *Repository) CostTrends(ctx context.Context, opts ListOptions, period st
   SELECT %s AS period,
     COALESCE(NULLIF(l.provider,''),'unknown') AS provider,
     COALESCE(NULLIF(l.model,''),'unknown') AS model,
+    COALESCE(r.agent_id,'unknown') AS agentId,
     COUNT(*) AS requests,
     SUM(l.input_tokens) AS inputTokens,
     SUM(l.output_tokens) AS outputTokens,
@@ -307,10 +433,11 @@ func (r *Repository) CostTrends(ctx context.Context, opts ListOptions, period st
     SUM(l.cache_write_tokens) AS cacheWriteTokens,
     SUM(l.cost_usd) AS costUsd
   FROM llm_calls l LEFT JOIN run_agents r ON r.instance_id=l.instance_id AND r.run_id=l.run_id
-  WHERE (@instance='' OR l.instance_id=@instance)
-    AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to)
-    AND (@agent='' OR r.agent_id=@agent)
-  GROUP BY period, l.provider, l.model
+	  WHERE (@instance='' OR l.instance_id=@instance)
+	    AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to)
+	    AND (@agent='' OR r.agent_id=@agent)
+	    AND (@status='' OR l.status=@status)
+  GROUP BY period, l.provider, l.model, r.agent_id
   ORDER BY period DESC, costUsd DESC`, runAgentsCTE, dateFormat)
 
 	return queryMaps(ctx, r.db, q, analyticsArgs(opts)...)
@@ -329,9 +456,10 @@ func (r *Repository) CostSummary(ctx context.Context, opts ListOptions) (map[str
     SUM(CASE WHEN l.started_at >= datetime('now', '-7 days') THEN l.cost_usd ELSE 0 END) AS lastWeekCost,
     SUM(CASE WHEN l.started_at >= datetime('now', '-30 days') THEN l.cost_usd ELSE 0 END) AS lastMonthCost
   FROM llm_calls l LEFT JOIN run_agents r ON r.instance_id=l.instance_id AND r.run_id=l.run_id
-  WHERE (@instance='' OR l.instance_id=@instance)
-    AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to)
-    AND (@agent='' OR r.agent_id=@agent)`, runAgentsCTE)
+	  WHERE (@instance='' OR l.instance_id=@instance)
+	    AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to)
+	    AND (@agent='' OR r.agent_id=@agent)
+	    AND (@status='' OR l.status=@status)`, runAgentsCTE)
 
 	rows, err := queryMaps(ctx, r.db, q, analyticsArgs(opts)...)
 	if err != nil || len(rows) == 0 {

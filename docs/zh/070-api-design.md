@@ -66,8 +66,8 @@
 ```json
 {
   "apiVersion":3,
-  "schemaVersion":5,
-  "capabilities":["agent-stats-v3","session-waterfall-v3","timeseries-v3","dashboard-config-v3","disk-space-v3"],
+  "schemaVersion":6,
+  "capabilities":["agent-stats-v3","timeseries-v3","trace-span-v6","anomaly-signals-v6","cost-attribution-v6"],
   "buildId":"20260710T130000Z-abc1234",
   "daemon":{"ready":true,"version":"0.3.0"},
   "gateway":{"up":true,"instanceId":"local-abc123","pid":10207},

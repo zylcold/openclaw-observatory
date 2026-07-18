@@ -4,12 +4,14 @@ import assert from "node:assert/strict";
 import { normalizeConfig } from "../src/config.js";
 import {
   DEFAULT_CUSTOM_CHARTS, buildCustomChartSeries, normalizeCustomCharts, suitableDimensionGroups,
+  suitableDimensionGroupsForDomain,
 } from "../src/custom-chart-model.js";
 
 test("new and migrated configs receive default custom charts", () => {
   const config = normalizeConfig({});
   assert.equal(config.customCharts.length, DEFAULT_CUSTOM_CHARTS.length);
-  assert.deepEqual(config.customCharts[2].dimensions, ["time", "model"]);
+  assert.deepEqual(config.customCharts.find((chart) => chart.id === "default-model-tokens").dimensions, ["time", "model"]);
+  assert.equal(new Set(config.customCharts.map((chart) => chart.domain)).size, 7);
 });
 
 test("an explicitly empty custom chart list remains empty", () => {
@@ -50,6 +52,7 @@ test("two dimensions produce category and series datasets", () => {
 });
 
 test("chart choices expose only suitable dimension groups", () => {
-  assert.deepEqual(suitableDimensionGroups("line").map((group) => group.id), ["overview", "agents", "models"]);
-  assert.deepEqual(suitableDimensionGroups("doughnut").map((group) => group.id), ["agents", "models", "tools", "errors"]);
+  assert.deepEqual(suitableDimensionGroups("line").map((group) => group.id), ["overview", "agents", "sessions", "models", "tools", "infrastructure", "errors"]);
+  assert.deepEqual(suitableDimensionGroups("doughnut").map((group) => group.id), ["agents", "sessions", "models", "tools", "errors"]);
+  assert.deepEqual(suitableDimensionGroupsForDomain("line", "tools").map((group) => group.id), ["tools"]);
 });

@@ -28,7 +28,7 @@ const (
 
 var BuildID = "dev"
 
-var Capabilities = []string{"agent-stats-v3", "session-waterfall-v3", "timeseries-v3", "dashboard-config-v3", "disk-space-v3", "cost-trends-v4", "cursor-pagination-v4"}
+var Capabilities = []string{"agent-stats-v3", "session-waterfall-v3", "timeseries-v3", "dashboard-config-v3", "disk-space-v3", "cost-trends-v4", "cursor-pagination-v4", "tool-observability-v4", "trace-span-v6", "anomaly-signals-v6", "cost-attribution-v6"}
 
 type Server struct {
 	repo           *storage.Repository
@@ -283,6 +283,11 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query error stats")
 		return
 	}
+	anomalies, err := s.repo.RecentAnomalies(r.Context(), o)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query recent anomalies")
+		return
+	}
 	subagents, err := s.repo.ListSubagentRuns(r.Context(), o)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query subagents")
@@ -313,7 +318,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	data(w, map[string]any{
 		"status": status, "timeseries": timeseries, "models": models, "tools": tools, "agents": agents,
-		"sessions": sessions, "llmCalls": llmCalls, "errors": errors, "subagents": subagents, "mcpCalls": mcpCalls,
+		"sessions": sessions, "llmCalls": llmCalls, "errors": errors, "anomalies": anomalies, "subagents": subagents, "mcpCalls": mcpCalls,
 		"costTrends": costTrends, "costSummary": costSummary, "costTrends30d": costTrends30d,
 	})
 }
