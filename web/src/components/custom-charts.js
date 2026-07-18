@@ -6,32 +6,49 @@ import {
 } from "../custom-chart-model.js";
 import { esc } from "../format.js";
 
+const glyphSvg = (content) => `<svg viewBox="0 0 96 48" preserveAspectRatio="xMidYMid meet" aria-hidden="true" focusable="false">${content}</svg>`;
+
 function chartGlyph(type) {
-  if (["line", "area", "stepLine", "cumulativeLine", "stackedArea"].includes(type)) {
-    if (type === "stepLine") return `<svg viewBox="0 0 88 44" aria-hidden="true"><path class="glyph-grid" d="M5 37H83M5 8V37"/><path class="glyph-line" d="M7 33H26V25H45V17H64V9H81"/></svg>`;
-    if (type === "stackedArea") return `<svg viewBox="0 0 88 44" aria-hidden="true"><path class="glyph-area glyph-secondary" d="M7 34L25 25L44 29L62 17L81 21V38H7Z"/><path class="glyph-area" d="M7 26L25 18L44 22L62 8L81 13V21L62 17L44 29L25 25L7 34Z"/></svg>`;
-    const path = type === "cumulativeLine" ? "M7 34L24 31L40 25L57 17L80 8" : "M7 33L24 24L39 28L56 12L80 17";
-    return `<svg viewBox="0 0 88 44" aria-hidden="true"><path class="glyph-grid" d="M5 37H83M5 8V37"/><path class="${type === "area" ? "glyph-area" : "glyph-line"}" d="${path}"/></svg>`;
+  const axis = `<path class="glyph-grid" d="M10 7V40H88"/>`;
+  switch (type) {
+    case "line":
+      return glyphSvg(`${axis}<path class="glyph-line" d="M14 34L31 25L47 30L65 14L84 19"/>`);
+    case "area":
+      return glyphSvg(`${axis}<path class="glyph-fill-primary" d="M14 34L31 25L47 30L65 14L84 19V40H14Z"/><path class="glyph-line" d="M14 34L31 25L47 30L65 14L84 19"/>`);
+    case "stepLine":
+      return glyphSvg(`${axis}<path class="glyph-line" d="M14 34H31V27H48V20H66V12H84"/>`);
+    case "cumulativeLine":
+      return glyphSvg(`${axis}<path class="glyph-line" d="M14 35L31 32L48 27L66 19L84 10"/>`);
+    case "stackedArea":
+      return glyphSvg(`${axis}<path class="glyph-fill-secondary" d="M14 35L31 28L48 31L66 20L84 24V40H14Z"/><path class="glyph-fill-primary" d="M14 27L31 19L48 22L66 10L84 15V24L66 20L48 31L31 28L14 35Z"/><path class="glyph-line" d="M14 27L31 19L48 22L66 10L84 15"/>`);
+    case "bar":
+      return glyphSvg(`${axis}<rect class="glyph-fill-primary" x="17" y="27" width="11" height="13" rx="1"/><rect class="glyph-fill-primary" x="35" y="17" width="11" height="23" rx="1"/><rect class="glyph-fill-primary" x="53" y="23" width="11" height="17" rx="1"/><rect class="glyph-fill-primary" x="71" y="10" width="11" height="30" rx="1"/>`);
+    case "horizontalBar":
+      return glyphSvg(`<path class="glyph-grid" d="M12 7V41"/><rect class="glyph-fill-primary" x="12" y="9" width="48" height="7" rx="1"/><rect class="glyph-fill-primary" x="12" y="21" width="70" height="7" rx="1"/><rect class="glyph-fill-primary" x="12" y="33" width="57" height="7" rx="1"/>`);
+    case "stackedBar":
+      return glyphSvg(`${axis}<rect class="glyph-fill-primary" x="18" y="26" width="14" height="14"/><rect class="glyph-fill-secondary" x="18" y="15" width="14" height="11"/><rect class="glyph-fill-primary" x="42" y="20" width="14" height="20"/><rect class="glyph-fill-secondary" x="42" y="9" width="14" height="11"/><rect class="glyph-fill-primary" x="66" y="29" width="14" height="11"/><rect class="glyph-fill-secondary" x="66" y="17" width="14" height="12"/>`);
+    case "combo":
+      return glyphSvg(`${axis}<rect class="glyph-fill-primary" x="18" y="27" width="11" height="13" rx="1"/><rect class="glyph-fill-primary" x="40" y="19" width="11" height="21" rx="1"/><rect class="glyph-fill-primary" x="62" y="25" width="11" height="15" rx="1"/><path class="glyph-line-secondary" d="M14 31L35 20L57 25L82 11"/>`);
+    case "waterfall":
+      return glyphSvg(`${axis}<rect class="glyph-fill-primary" x="16" y="28" width="13" height="12" rx="1"/><path class="glyph-grid" d="M29 28H37M50 19H58M71 24H79"/><rect class="glyph-fill-secondary" x="37" y="19" width="13" height="9" rx="1"/><rect class="glyph-fill-primary" x="58" y="24" width="13" height="8" rx="1"/><rect class="glyph-fill-secondary" x="79" y="11" width="9" height="13" rx="1"/>`);
+    case "histogram":
+      return glyphSvg(`${axis}<rect class="glyph-fill-primary" x="16" y="33" width="10" height="7"/><rect class="glyph-fill-primary" x="26" y="24" width="10" height="16"/><rect class="glyph-fill-primary" x="36" y="11" width="10" height="29"/><rect class="glyph-fill-primary" x="46" y="16" width="10" height="24"/><rect class="glyph-fill-primary" x="56" y="27" width="10" height="13"/><rect class="glyph-fill-primary" x="66" y="32" width="10" height="8"/>`);
+    case "doughnut":
+      return glyphSvg(`<circle class="glyph-ring-secondary" cx="48" cy="24" r="16" pathLength="100"/><circle class="glyph-ring-primary" cx="48" cy="24" r="16" pathLength="100" stroke-dasharray="62 38" transform="rotate(-90 48 24)"/>`);
+    case "pie":
+      return glyphSvg(`<circle class="glyph-fill-secondary" cx="48" cy="24" r="18"/><path class="glyph-fill-primary" d="M48 24V6A18 18 0 0 0 32.4 33Z"/><path class="glyph-fill-tertiary" d="M48 24H66A18 18 0 0 1 32.4 33Z"/>`);
+    case "polarArea":
+      return glyphSvg(`<circle class="glyph-grid" cx="48" cy="24" r="19"/><path class="glyph-fill-primary" d="M48 24V7A17 17 0 0 1 65 24Z"/><path class="glyph-fill-secondary" d="M48 24H63A15 15 0 0 1 48 39Z"/><path class="glyph-fill-tertiary" d="M48 24V35A11 11 0 0 1 37 24Z"/><path class="glyph-grid" d="M48 5V43M29 24H67"/>`);
+    case "radar":
+      return glyphSvg(`<path class="glyph-grid" d="M48 5L70 17L66 40H30L26 17ZM48 5V40M26 17L66 40M70 17L30 40"/><path class="glyph-fill-primary" d="M48 11L64 19L59 34H35L31 20Z"/>`);
+    case "gauge":
+      return glyphSvg(`<path class="glyph-ring-secondary" d="M24 39A24 24 0 0 1 72 39"/><path class="glyph-ring-primary" d="M24 39A24 24 0 0 1 62 19"/><path class="glyph-line" d="M48 39L63 20"/>`);
+    case "scatter":
+    case "bubble":
+      return glyphSvg(`${axis}<circle class="glyph-fill-primary" cx="26" cy="31" r="${type === "bubble" ? 6 : 3}"/><circle class="glyph-fill-secondary" cx="48" cy="23" r="${type === "bubble" ? 9 : 3}"/><circle class="glyph-fill-tertiary" cx="73" cy="13" r="${type === "bubble" ? 5 : 3}"/>`);
+    default:
+      return glyphSvg("");
   }
-  if (["bar", "horizontalBar", "stackedBar"].includes(type)) {
-    if (type === "stackedBar") return `<svg viewBox="0 0 88 44" aria-hidden="true"><rect x="12" y="23" width="14" height="15"/><rect class="glyph-secondary" x="12" y="12" width="14" height="11"/><rect x="37" y="18" width="14" height="20"/><rect class="glyph-secondary" x="37" y="7" width="14" height="11"/><rect x="62" y="27" width="14" height="11"/><rect class="glyph-secondary" x="62" y="15" width="14" height="12"/></svg>`;
-    return type === "bar"
-      ? `<svg viewBox="0 0 88 44" aria-hidden="true"><path class="glyph-grid" d="M5 38H83"/><rect x="12" y="25" width="12" height="13"/><rect x="31" y="15" width="12" height="23"/><rect x="50" y="21" width="12" height="17"/><rect x="69" y="8" width="12" height="30"/></svg>`
-      : `<svg viewBox="0 0 88 44" aria-hidden="true"><rect x="8" y="7" width="48" height="6"/><rect x="8" y="19" width="72" height="6"/><rect x="8" y="31" width="58" height="6"/></svg>`;
-  }
-  if (type === "combo") return `<svg viewBox="0 0 88 44" aria-hidden="true"><rect x="12" y="25" width="12" height="13"/><rect x="34" y="17" width="12" height="21"/><rect x="56" y="23" width="12" height="15"/><path class="glyph-line" d="M8 29L29 19L51 24L78 8"/></svg>`;
-  if (type === "waterfall") return `<svg viewBox="0 0 88 44" aria-hidden="true"><path class="glyph-grid" d="M5 38H83"/><rect x="9" y="26" width="13" height="12"/><rect class="glyph-secondary" x="27" y="18" width="13" height="8"/><rect x="45" y="21" width="13" height="9"/><rect class="glyph-secondary" x="63" y="9" width="13" height="12"/><path class="glyph-grid" d="M22 26H27M40 18H63M58 30H63"/></svg>`;
-  if (type === "histogram") return `<svg viewBox="0 0 88 44" aria-hidden="true"><path class="glyph-grid" d="M5 38H83"/><rect x="12" y="31" width="10" height="7"/><rect x="22" y="22" width="10" height="16"/><rect x="32" y="9" width="10" height="29"/><rect x="42" y="14" width="10" height="24"/><rect x="52" y="25" width="10" height="13"/><rect x="62" y="30" width="10" height="8"/></svg>`;
-  if (type === "gauge") return `<svg viewBox="0 0 88 44" aria-hidden="true"><path class="glyph-grid" d="M16 35A28 28 0 0 1 72 35" stroke-width="8"/><path class="glyph-line" d="M16 35A28 28 0 0 1 60 12" stroke-width="8"/><path class="glyph-line" d="M44 35L61 17" stroke-width="3"/></svg>`;
-  if (type === "scatter" || type === "bubble") return `<svg viewBox="0 0 88 44" aria-hidden="true"><path class="glyph-grid" d="M7 37H82M7 6V37"/><circle cx="24" cy="29" r="${type === "bubble" ? 6 : 3}"/><circle class="glyph-secondary" cx="43" cy="22" r="${type === "bubble" ? 9 : 3}"/><circle class="glyph-tertiary" cx="68" cy="11" r="${type === "bubble" ? 5 : 3}"/></svg>`;
-  if (type === "radar") {
-    return `<svg viewBox="0 0 88 44" aria-hidden="true"><path class="glyph-grid" d="M44 4L78 19L66 40H22L10 19ZM44 4V35M10 19L66 40M78 19L22 40"/><path class="glyph-area" d="M44 10L68 21L58 34H29L19 21Z"/></svg>`;
-  }
-  if (type === "polarArea") {
-    return `<svg viewBox="0 0 88 44" aria-hidden="true"><path class="glyph-grid" d="M44 4V40M24 9L64 35M64 9L24 35"/><path class="glyph-area" d="M44 6A18 18 0 0 1 62 24H44ZM44 24H27A17 17 0 0 1 44 7Z"/></svg>`;
-  }
-  const hole = type === "doughnut" ? `<circle class="glyph-hole" cx="44" cy="22" r="8"/>` : "";
-  return `<svg viewBox="0 0 88 44" aria-hidden="true"><path d="M42 3A19 19 0 0 0 25 31L42 22Z"/><path class="glyph-secondary" d="M46 3V20H65A19 19 0 0 0 46 3Z"/><path class="glyph-tertiary" d="M64 24H47L31 34A19 19 0 0 0 64 24Z"/>${hole}</svg>`;
 }
 
 export function customChartBuilderHTML(builder, domain = "overview") {
