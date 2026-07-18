@@ -60,12 +60,20 @@ fi
 openclaw plugins enable openclaw-observatory
 openclaw gateway restart
 
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  if curl -fsS --max-time 2 http://127.0.0.1:10086/health >/dev/null 2>&1; then break; fi
-  sleep 0.5
+STATUS=""
+for _ in $(seq 1 30); do
+  if curl -fsS --max-time 2 http://127.0.0.1:10086/health >/dev/null 2>&1 \
+    && curl -fsS --max-time 2 http://127.0.0.1:10086/ready >/dev/null 2>&1; then
+    STATUS="$(curl -fsS --max-time 5 http://127.0.0.1:10086/api/v1/status || true)"
+    if [[ -n "$STATUS" ]]; then break; fi
+  fi
+  sleep 1
 done
-STATUS="$(curl -fsS --max-time 3 http://127.0.0.1:10086/api/v1/status)"
-PAGE="$(curl -fsS --max-time 3 http://127.0.0.1:10086/)"
+if [[ -z "$STATUS" ]]; then
+  echo "Observatory did not become ready within 30 seconds." >&2
+  exit 1
+fi
+PAGE="$(curl -fsS --max-time 5 http://127.0.0.1:10086/)"
 if [[ "$STATUS" != *'"apiVersion":3'* || "$STATUS" != *'"schemaVersion":6'* || "$STATUS" != *'timeseries-v3'* || "$STATUS" != *'trace-span-v6'* || "$STATUS" != *'anomaly-signals-v6'* ]]; then
   echo "Observatory backend compatibility check failed: $STATUS" >&2
   exit 1
