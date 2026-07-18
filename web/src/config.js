@@ -1,17 +1,10 @@
+import { DEFAULT_CUSTOM_CHARTS, normalizeCustomCharts } from "./custom-chart-model.js";
+
 export const MODULES = [
   ["overview", "核心指标"],
-  ["resources", "资源趋势"],
-  ["llm_combo", "LLM 请求 · 延迟 · 错误率"],
-  ["model_tokens", "各模型 Token 趋势"],
-  ["token_share", "Token 模型占比"],
-  ["tool_share", "工具调用占比"],
-  ["scatter", "LLM 延迟－Token 散点"],
-  ["agent_compare", "Agent 对比"],
-  ["heatmap", "时间 × Agent 活跃度"],
   ["sessions", "会话瀑布图"],
   ["errors_cost", "错误聚合与成本"],
   ["activity", "Subagent / MCP 调用"],
-  ["cost_trends", "成本趋势与预算"],
 ];
 
 // All available KPI metrics for the overview module.
@@ -40,11 +33,12 @@ export const KPI_METRICS = [
 ];
 
 export const DEFAULT_CONFIG = {
-  version: 1,
+  version: 2,
   theme: "dark",
   refreshInterval: 15000,
   modules: MODULES.map(([id]) => ({ id, visible: true })),
   kpiMetrics: KPI_METRICS.map(([id, , vis]) => ({ id, visible: vis })),
+  customCharts: normalizeCustomCharts(DEFAULT_CUSTOM_CHARTS),
   thresholds: { errorRateWarning: 5, errorRateCritical: 15, llmLatencyWarningMs: 5000, llmLatencyCriticalMs: 15000, costBudgetUsd: 0 },
 };
 
@@ -74,12 +68,14 @@ export function normalizeConfig(input = {}) {
   }
   for (const [id, , vis] of KPI_METRICS) if (!seenKpis.has(id)) kpiMetrics.push({ id, visible: vis });
   const interval = Number(input.refreshInterval);
+  const hasCustomCharts = Object.prototype.hasOwnProperty.call(input, "customCharts");
   return {
-    version: 1,
+    version: 2,
     theme: input.theme === "light" ? "light" : "dark",
     refreshInterval: [5000, 15000, 30000, 60000, 0].includes(interval) ? interval : DEFAULT_CONFIG.refreshInterval,
     modules,
     kpiMetrics,
+    customCharts: normalizeCustomCharts(input.customCharts, { useDefaults: !hasCustomCharts }),
     thresholds: { ...DEFAULT_CONFIG.thresholds, ...(input.thresholds || {}) },
   };
 }

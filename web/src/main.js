@@ -2,6 +2,7 @@ import "./styles.css";
 import { loadDashboard, loadSession } from "./api.js";
 import { loadConfig, resetConfig, saveConfig } from "./config.js";
 import { destroyCharts, setChartAnimation } from "./charts.js";
+import { defaultCustomChartTitle, dimensionGroupById } from "./custom-chart-model.js";
 import { timeFilters } from "./state.js";
 import { fetchModelPricing } from "./pricing.js";
 import { paintCharts, updateCharts, updateNonChartDOM, updateAgentTable, setRange } from "./components/modules.js";
@@ -16,6 +17,7 @@ let loading = false;
 let error = "";
 let settingsOpen = false;
 let kpiEditorOpen = false;
+let customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", title: "", width: "half" };
 let refreshTimer = null;
 let streamTimer = null;
 let interactionTimer = null;
@@ -36,7 +38,7 @@ const INTERACTION_IDLE_MS = 600;
 const FILTER_KEY = "openclaw-observatory-filters-v1";
 
 function interactionActive() {
-  return settingsOpen || pointerActive || dragActive || Boolean(openSelect?.isConnected) || Date.now() < interactionUntil;
+  return settingsOpen || customBuilder.open || pointerActive || dragActive || Boolean(openSelect?.isConnected) || Date.now() < interactionUntil;
 }
 
 function flushDeferredRender() {
@@ -116,12 +118,12 @@ function render({ preserveView = false, deferWhileInteracting = false } = {}) {
     setChartAnimation(!preserveView && !hasRenderedData);
     setRange(filters.range);
     document.documentElement.dataset.theme = config.theme;
-    app.innerHTML = shell({ config, data, filters, loading, error, settingsOpen, sessionDetail, connectionLost, dataStale, kpiEditorOpen });
+    app.innerHTML = shell({ config, data, filters, loading, error, settingsOpen, sessionDetail, connectionLost, dataStale, kpiEditorOpen, customBuilder });
     const interval = document.getElementById("refresh-interval");
     if (interval) interval.value = String(config.refreshInterval);
     bind();
     if (data) requestAnimationFrame(() => {
-      try { paintCharts(data); } catch(e) { console.error("paintCharts error:", e); }
+      try { paintCharts(data, config); } catch(e) { console.error("paintCharts error:", e); }
       restoreView(view);
       hasRenderedData = true;
     });
@@ -139,7 +141,7 @@ function incrementalUpdate() {
   if (!data || !hasRenderedData) return false;
   const app = document.getElementById("app");
   if (!app) return false;
-  const ok = updateCharts(data);
+  const ok = updateCharts(data, config);
   if (!ok) return false;
   updateNonChartDOM(app, data, config);
   updateAgentTable(app, data);
@@ -220,6 +222,68 @@ function bind() {
   document.getElementById("settings-toggle")?.addEventListener("click", () => { settingsOpen = true; render(); });
   document.getElementById("settings-close")?.addEventListener("click", () => { settingsOpen = false; render(); });
   document.getElementById("drawer-backdrop")?.addEventListener("click", () => { settingsOpen = false; render(); });
+  document.getElementById("custom-chart-create")?.addEventListener("click", () => {
+    settingsOpen = false;
+    customBuilder = { open: true, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", title: "", width: "half" };
+    render({ preserveView: true });
+  });
+  const closeCustomBuilder = () => {
+    customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", title: "", width: "half" };
+    render({ preserveView: true });
+  };
+  document.getElementById("custom-builder-close")?.addEventListener("click", closeCustomBuilder);
+  document.getElementById("custom-builder-cancel")?.addEventListener("click", closeCustomBuilder);
+  document.getElementById("custom-builder-backdrop")?.addEventListener("click", closeCustomBuilder);
+  document.querySelectorAll("[data-custom-chart-type]").forEach((button) => button.addEventListener("click", () => {
+    customBuilder = { ...customBuilder, step: 2, chartType: button.dataset.customChartType, dataset: "", dimensions: [], metric: "", title: "" };
+    render({ preserveView: true });
+  }));
+  document.getElementById("custom-builder-back")?.addEventListener("click", () => {
+    customBuilder = { ...customBuilder, step: 1, dataset: "", dimensions: [], metric: "", title: "" };
+    render({ preserveView: true });
+  });
+  document.querySelectorAll("[data-custom-dimension]").forEach((button) => button.addEventListener("click", () => {
+    const dataset = button.dataset.customDataset;
+    const dimension = button.dataset.customDimension;
+    const sameGroup = customBuilder.dataset === dataset;
+    let dimensions = sameGroup ? [...customBuilder.dimensions] : [];
+    if (dimensions.includes(dimension)) {
+      if (dimensions.length > 1) dimensions = dimensions.filter((id) => id !== dimension);
+    } else if (dimensions.length < 2) {
+      dimensions.push(dimension);
+    }
+    const group = dimensionGroupById(dataset);
+    const metric = sameGroup && group?.metrics.some((item) => item.id === customBuilder.metric)
+      ? customBuilder.metric
+      : group?.metrics[0]?.id || "";
+    customBuilder = { ...customBuilder, dataset, dimensions, metric, title: "" };
+    render({ preserveView: true });
+  }));
+  document.getElementById("custom-metric")?.addEventListener("change", (event) => {
+    customBuilder = { ...customBuilder, metric: event.target.value, title: "" };
+    render({ preserveView: true });
+  });
+  document.getElementById("custom-chart-add")?.addEventListener("click", () => {
+    const metric = document.getElementById("custom-metric")?.value || customBuilder.metric;
+    const fallbackTitle = defaultCustomChartTitle(customBuilder.dataset, customBuilder.dimensions, metric);
+    const title = document.getElementById("custom-chart-title")?.value.trim() || fallbackTitle;
+    const width = document.getElementById("custom-chart-width")?.value === "full" ? "full" : "half";
+    const id = `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    config = saveConfig({
+      ...config,
+      customCharts: [...config.customCharts, {
+        id, title, chartType: customBuilder.chartType, dataset: customBuilder.dataset,
+        dimensions: customBuilder.dimensions, metric, width,
+      }],
+    });
+    customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", title: "", width: "half" };
+    render({ preserveView: true });
+  });
+  document.querySelectorAll("[data-custom-chart-delete]").forEach((button) => button.addEventListener("click", () => {
+    const item = config.customCharts.find((chart) => chart.id === button.dataset.customChartDelete);
+    if (!item || !window.confirm(`删除“${item.title}”？`)) return;
+    updateConfig({ ...config, customCharts: config.customCharts.filter((chart) => chart.id !== item.id) });
+  }));
   document.getElementById("kpi-edit-toggle")?.addEventListener("click", () => { kpiEditorOpen = !kpiEditorOpen; render({ preserveView: true }); });
   document.querySelectorAll("[data-kpi-visible]").forEach((input) => input.addEventListener("change", () => {
     var kpiId = input.dataset.kpiVisible;
@@ -297,6 +361,26 @@ function bindDrag() {
       });
     });
   }
+  let customDragged = "";
+  document.querySelectorAll("[data-custom-chart]").forEach((panel) => {
+    panel.addEventListener("dragstart", () => { customDragged = panel.dataset.customChart; dragActive = true; panel.classList.add("dragging"); });
+    panel.addEventListener("dragend", () => { customDragged = ""; dragActive = false; panel.classList.remove("dragging"); markInteraction(); });
+    panel.addEventListener("dragover", (event) => event.preventDefault());
+    panel.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const target = panel.dataset.customChart;
+      if (!customDragged || customDragged === target) return;
+      const charts = [...config.customCharts];
+      const from = charts.findIndex((item) => item.id === customDragged);
+      const to = charts.findIndex((item) => item.id === target);
+      if (from < 0 || to < 0) return;
+      const [item] = charts.splice(from, 1);
+      charts.splice(to, 0, item);
+      customDragged = "";
+      dragActive = false;
+      updateConfig({ ...config, customCharts: charts });
+    });
+  });
 }
 
 function connectStream() {

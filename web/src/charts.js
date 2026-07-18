@@ -1,9 +1,14 @@
 import {
   Chart, ArcElement, BarController, BarElement, CategoryScale, DoughnutController, Filler,
-  Legend, LinearScale, LineController, LineElement, PointElement, ScatterController, Tooltip,
+  Legend, LinearScale, LineController, LineElement, PieController, PointElement,
+  PolarAreaController, RadarController, RadialLinearScale, ScatterController, Tooltip,
 } from "chart.js";
 
-Chart.register(ArcElement, BarController, BarElement, CategoryScale, DoughnutController, Filler, Legend, LinearScale, LineController, LineElement, PointElement, ScatterController, Tooltip);
+Chart.register(
+  ArcElement, BarController, BarElement, CategoryScale, DoughnutController, Filler, Legend,
+  LinearScale, LineController, LineElement, PieController, PointElement, PolarAreaController,
+  RadarController, RadialLinearScale, ScatterController, Tooltip,
+);
 Chart.defaults.font.family = "Inter, ui-sans-serif, system-ui, -apple-system, sans-serif";
 Chart.defaults.animation.duration = 250;
 Chart.defaults.responsive = true;
@@ -49,6 +54,10 @@ export const lineChart = (id, labels, datasets, options = {}) => make(id, { type
 export const comboChart = (id, labels, datasets, options = {}) => make(id, { type: "bar", data: { labels, datasets }, options: { interaction: { mode: "index", intersect: false }, ...options } });
 export const doughnutChart = (id, labels, values) => make(id, { type: "doughnut", data: { labels, datasets: [{ data: values, backgroundColor: palette, borderWidth: 0 }] }, options: { cutout: "68%", plugins: { legend: { position: "bottom" } } } });
 export const scatterChart = (id, datasets) => make(id, { type: "scatter", data: { datasets }, options: { parsing: false, scales: { x: { title: { display: true, text: "Token" } }, y: { title: { display: true, text: "延迟 ms" } } } } });
+export const customChart = (id, requestedType, data, options = {}) => {
+  const type = requestedType === "area" ? "line" : requestedType === "horizontalBar" ? "bar" : requestedType;
+  return make(id, { type, data, options });
+};
 
 // --- Incremental update helpers (no destroy/re-create flicker) ---
 

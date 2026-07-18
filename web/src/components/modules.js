@@ -1,6 +1,7 @@
 import { comboChart, doughnutChart, lineChart, palette, scatterChart, updateChartData, updateDoughnut, updateScatter, hasChart } from "../charts.js";
 import { bytes, compact, esc, money, ms, num, shortTime, setShortTimeRange } from "../format.js";
 import { KPI_METRICS } from "../config.js";
+import { paintCustomCharts, updateCustomCharts } from "./custom-charts.js";
 
 // Range constants for time-based formatting decisions
 const RANGE_MS = { "1h": 3600000, "6h": 21600000, "24h": 86400000, "7d": 604800000, "30d": 2592000000 };
@@ -281,7 +282,7 @@ export function moduleHTML(id, data, config, sessionDetail, kpiEditorOpen) {
   return "<article class=\"panel module-" + id + "\" draggable=\"true\" data-module=\"" + id + "\"><header><div><span class=\"drag\" title=\"Drag to reorder\">⠿</span><h2>" + names[id] + "</h2></div>" + editBtn + "</header>" + body + "</article>";
 }
 
-export function paintCharts(data) {
+export function paintCharts(data, config = {}) {
   const points = data.timeseries?.points || [];
   const labels = points.map((p) => shortTime(p.time));
   lineChart("resources-chart", labels, [
@@ -326,6 +327,7 @@ export function paintCharts(data) {
 
   // Cost trend chart
   paintCostTrendChart(data);
+  paintCustomCharts(data, config.customCharts || []);
 }
 
 function paintCostTrendChart(data) {
@@ -347,12 +349,13 @@ function paintCostTrendChart(data) {
  * Incrementally update existing charts without destroying them.
  * Returns true if all charts were updated in-place, false if a full re-render is needed.
  */
-export function updateCharts(data) {
+export function updateCharts(data, config = {}) {
   var points = data.timeseries?.points || [];
   var labels = points.map((p) => shortTime(p.time));
 
   var requiredCharts = ["resources-chart", "llm-combo-chart", "model-token-chart", "token-share-chart", "tool-share-chart", "scatter-chart", "agent-chart"];
-  var allExist = requiredCharts.every((id) => hasChart(id));
+  var visibleCharts = requiredCharts.filter((id) => document.getElementById(id));
+  var allExist = visibleCharts.every((id) => hasChart(id));
   if (!allExist) return false;
 
   updateChartData("resources-chart", labels, [
@@ -412,7 +415,7 @@ export function updateCharts(data) {
     })));
   }
 
-  return true;
+  return updateCustomCharts(data, config.customCharts || []);
 }
 
 /**
