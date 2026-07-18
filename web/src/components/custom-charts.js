@@ -131,7 +131,9 @@ export function customChartBuilderHTML(builder, domain = "overview") {
     </section>`;
 }
 
-export function customChartPanelHTML(item, data) {
+const favoriteGlyph = `<svg viewBox="0 0 20 20" aria-hidden="true" focusable="false"><path d="M10 2.2l2.35 4.76 5.25.76-3.8 3.7.9 5.23L10 14.18l-4.7 2.47.9-5.23-3.8-3.7 5.25-.76L10 2.2z"/></svg>`;
+
+export function customChartPanelHTML(item, data, { favoriteView = false, sourceLabel = "" } = {}) {
   const series = buildCustomChartSeries(data, item);
   const chartType = chartTypeById(item.chartType);
   const group = dimensionGroupById(item.dataset);
@@ -140,9 +142,15 @@ export function customChartPanelHTML(item, data) {
   const canvas = series.labels.length
     ? `<div class="chart custom-chart chart-${esc(item.chartType)} ${item.chartType === "horizontalBar" ? "horizontal" : ""}"><canvas id="custom-chart-${item.id}"></canvas></div>`
     : `<div class="empty">当前筛选范围内没有可用于此表盘的数据</div>`;
-  return `<article class="panel module-custom ${item.width === "full" ? "custom-full" : ""}" draggable="true" data-custom-chart="${esc(item.id)}">
-    <header><div><span class="drag" title="拖拽排序">⠿</span><h2>${esc(item.title)}</h2><span class="panel-meta">${esc(chartType?.label || "")} · ${esc(group?.label || "")} / ${esc(dimensionLabels)} · ${esc(metricLabels)}</span></div>
-      <button class="panel-delete" data-custom-chart-delete="${esc(item.id)}" title="删除表盘" aria-label="删除 ${esc(item.title)}">删除</button>
+  const canFavorite = item.domain !== "overview";
+  const favoriteLabel = item.favorite ? "已收藏" : "收藏";
+  const favoriteButton = canFavorite
+    ? `<button class="panel-favorite ${item.favorite ? "active" : ""}" data-custom-chart-favorite="${esc(item.id)}" aria-pressed="${item.favorite ? "true" : "false"}" title="${item.favorite ? "从 Overview 取消收藏" : "收藏到 Overview"}" aria-label="${item.favorite ? "取消收藏" : "收藏"} ${esc(item.title)}">${favoriteGlyph}<span>${favoriteView ? "取消收藏" : favoriteLabel}</span></button>`
+    : "";
+  const deleteButton = favoriteView ? "" : `<button class="panel-delete" data-custom-chart-delete="${esc(item.id)}" title="删除表盘" aria-label="删除 ${esc(item.title)}">删除</button>`;
+  return `<article class="panel module-custom ${favoriteView ? "favorite-copy" : ""} ${item.width === "full" ? "custom-full" : ""}" ${favoriteView ? `data-favorite-chart="${esc(item.id)}"` : `draggable="true" data-custom-chart="${esc(item.id)}"`}>
+    <header><div>${favoriteView ? "" : `<span class="drag" title="拖拽排序">⠿</span>`}<h2>${esc(item.title)}</h2><span class="panel-meta">${esc(chartType?.label || "")} · ${esc(group?.label || "")} / ${esc(dimensionLabels)} · ${esc(metricLabels)}${sourceLabel ? ` · 来自 ${esc(sourceLabel)}` : ""}</span></div>
+      <div class="panel-actions">${favoriteButton}${deleteButton}</div>
     </header>${canvas}
   </article>`;
 }

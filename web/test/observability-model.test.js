@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  agentStatus, chartsForDomain, filterDashboardData, normalizeDomain, percentile,
-  sessionSummary,
+  agentStatus, chartsForDomain, chartsForView, favoriteCharts, filterDashboardData,
+  normalizeDomain, percentile, sessionSummary,
 } from "../src/observability-model.js";
 
 test("observability domains and chart routing are normalized", () => {
@@ -13,6 +13,17 @@ test("observability domains and chart routing are normalized", () => {
     { id: "a", domain: "agents" },
     { id: "m", domain: "models" },
   ], "models").map((chart) => chart.id), ["m"]);
+});
+
+test("Overview includes favorites from other domains without changing their source tabs", () => {
+  const charts = [
+    { id: "overview", domain: "overview" },
+    { id: "agent-favorite", domain: "agents", favorite: true },
+    { id: "model", domain: "models" },
+  ];
+  assert.deepEqual(favoriteCharts(charts).map((chart) => chart.id), ["agent-favorite"]);
+  assert.deepEqual(chartsForView(charts, "overview").map((chart) => chart.id), ["overview", "agent-favorite"]);
+  assert.deepEqual(chartsForView(charts, "agents").map((chart) => chart.id), ["agent-favorite"]);
 });
 
 test("context filters preserve dashboard shape and filter matching detail rows", () => {

@@ -7,7 +7,7 @@ import {
   defaultCustomChartTitle, dimensionGroupById,
 } from "./custom-chart-model.js";
 import {
-  chartsForDomain, domainFilterOptions, filterDashboardData, normalizeDomain,
+  chartsForView, domainFilterOptions, filterDashboardData, normalizeDomain,
 } from "./observability-model.js";
 import { timeFilters } from "./state.js";
 import { fetchModelPricing } from "./pricing.js";
@@ -130,7 +130,7 @@ function render({ preserveView = false, deferWhileInteracting = false } = {}) {
     document.documentElement.dataset.theme = config.theme;
     const viewData = filterDashboardData(data, viewFilters);
     const alerts = applyAlertState(evaluateAlerts(viewData, config), alertState);
-    const viewConfig = { ...config, customCharts: chartsForDomain(config.customCharts, activeDomain) };
+    const viewConfig = { ...config, customCharts: chartsForView(config.customCharts, activeDomain) };
     app.innerHTML = shell({
       config, data: viewData, filters, filterOptions: domainFilterOptions(data), viewFilters, activeDomain,
       loading, error, settingsOpen, sessionDetail, connectionLost, dataStale, kpiEditorOpen, customBuilder, alerts,
@@ -161,7 +161,7 @@ function incrementalUpdate() {
   // together so chart and tabular values always represent the same snapshot.
   if (app.querySelector(".domain-panel")) return false;
   const viewData = filterDashboardData(data, viewFilters);
-  const viewConfig = { ...config, customCharts: chartsForDomain(config.customCharts, activeDomain) };
+  const viewConfig = { ...config, customCharts: chartsForView(config.customCharts, activeDomain) };
   const ok = updateCharts(viewData, viewConfig);
   if (!ok) return false;
   updateNonChartDOM(app, viewData, viewConfig);
@@ -367,6 +367,14 @@ function bind() {
     const item = config.customCharts.find((chart) => chart.id === button.dataset.customChartDelete);
     if (!item || !window.confirm(`删除“${item.title}”？`)) return;
     updateConfig({ ...config, customCharts: config.customCharts.filter((chart) => chart.id !== item.id) });
+  }));
+  document.querySelectorAll("[data-custom-chart-favorite]").forEach((button) => button.addEventListener("click", () => {
+    const id = button.dataset.customChartFavorite;
+    config = saveConfig({
+      ...config,
+      customCharts: config.customCharts.map((chart) => chart.id === id ? { ...chart, favorite: !chart.favorite } : chart),
+    });
+    render({ preserveView: true });
   }));
   document.getElementById("kpi-edit-toggle")?.addEventListener("click", () => { kpiEditorOpen = !kpiEditorOpen; render({ preserveView: true }); });
   document.querySelectorAll("[data-kpi-visible]").forEach((input) => input.addEventListener("change", () => {

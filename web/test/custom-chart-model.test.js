@@ -19,6 +19,15 @@ test("an explicitly empty custom chart list remains empty", () => {
   assert.deepEqual(normalizeConfig({ customCharts: [] }).customCharts, []);
 });
 
+test("favorites persist only for charts outside Overview", () => {
+  const charts = normalizeCustomCharts([
+    { id: "model-favorite", chartType: "bar", dataset: "models", dimensions: ["model"], metric: "requests", favorite: true },
+    { id: "overview-favorite", chartType: "line", dataset: "overview", dimensions: ["time"], metric: "runs", favorite: true },
+  ]);
+  assert.equal(charts[0].favorite, true);
+  assert.equal("favorite" in charts[1], false);
+});
+
 test("invalid charts and dimensions are discarded", () => {
   const charts = normalizeCustomCharts([
     { id: "bad-type", chartType: "unknown", dataset: "models", dimensions: ["model"], metric: "requests" },

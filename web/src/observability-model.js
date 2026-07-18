@@ -71,6 +71,15 @@ export function chartsForDomain(charts, domain) {
   return (charts || []).filter((chart) => chart.domain === domain);
 }
 
+export function favoriteCharts(charts) {
+  return (charts || []).filter((chart) => chart.domain !== "overview" && chart.favorite === true);
+}
+
+export function chartsForView(charts, domain) {
+  const nativeCharts = chartsForDomain(charts, domain);
+  return domain === "overview" ? [...nativeCharts, ...favoriteCharts(charts)] : nativeCharts;
+}
+
 export function domainFilterOptions(data) {
   return {
     models: [...new Set((data?.models || []).map((row) => row.model).filter(Boolean))].sort(),

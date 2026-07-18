@@ -293,6 +293,7 @@ export function normalizeCustomCharts(input, { useDefaults = false } = {}) {
     seen.add(id);
     const fallbackTitle = defaultCustomChartTitle(group.id, dimensions, item.metric);
     const title = String(item.title || fallbackTitle).trim().slice(0, 80);
+    const domain = String(item.domain || group.domain || "overview");
     result.push({
       id,
       title: title || fallbackTitle,
@@ -303,7 +304,8 @@ export function normalizeCustomCharts(input, { useDefaults = false } = {}) {
       ...(secondaryMetric ? { secondaryMetric: secondaryMetric.id } : {}),
       ...(sizeMetric ? { sizeMetric: sizeMetric.id } : {}),
       width: item.width === "full" ? "full" : "half",
-      domain: String(item.domain || group.domain || "overview"),
+      domain,
+      ...(domain !== "overview" && item.favorite === true ? { favorite: true } : {}),
     });
   }
   return result;

@@ -2,7 +2,7 @@ import { esc } from "../format.js";
 import { RANGE_KEYS } from "../state.js";
 import { getPricingTimestamp } from "../pricing.js";
 import { customChartBuilderHTML, customChartPanelHTML } from "./custom-charts.js";
-import { OBSERVABILITY_DOMAINS, chartsForDomain, observabilityDomain } from "../observability-model.js";
+import { OBSERVABILITY_DOMAINS, chartsForDomain, favoriteCharts, observabilityDomain } from "../observability-model.js";
 import { domainDetailHTML, domainSummaryHTML } from "./domain-views.js";
 
 function fmtLocal(iso) {
@@ -20,6 +20,15 @@ export function shell({
   const compatible = !data || (data.status?.apiVersion === 3 && data.status?.capabilities?.includes("timeseries-v3"));
   const domain = observabilityDomain(activeDomain);
   const charts = chartsForDomain(config.customCharts, domain.id);
+  const favorites = domain.id === "overview" ? favoriteCharts(config.customCharts) : [];
+  const favoriteSection = favorites.length ? `
+    <section class="favorite-charts-section" aria-labelledby="favorite-charts-title">
+      <header><div><span>Overview 收藏</span><h2 id="favorite-charts-title">收藏图表</h2><small>来自其他观测域，跟随当前时间范围与筛选条件更新</small></div><b>${favorites.length}</b></header>
+      <div class="favorite-chart-grid">${favorites.map((item) => customChartPanelHTML(item, data, {
+        favoriteView: true,
+        sourceLabel: observabilityDomain(item.domain).label,
+      })).join("")}</div>
+    </section>` : "";
   const modelOptions = [...new Set([...(filterOptions?.models || []), viewFilters.model].filter(Boolean))].sort();
   const toolOptions = [...new Set([...(filterOptions?.tools || []), viewFilters.tool].filter(Boolean))].sort();
   const contextualFilters = `
@@ -55,6 +64,7 @@ export function shell({
       ${error ? `<div class="banner error">${esc(error)}</div>` : ""}
       <section id="dashboard" class="dashboard domain-${domain.id} ${loading && !data ? "loading" : ""}">${data
         ? domainSummaryHTML(domain.id, data, config, sessionDetail, kpiEditorOpen, alerts)
+          + favoriteSection
           + charts.map((item) => customChartPanelHTML(item, data)).join("")
           + domainDetailHTML(domain.id, data, config, sessionDetail, kpiEditorOpen, alerts)
         : `<div class="skeleton">正在加载观测指标…</div>`}</section>
@@ -63,7 +73,7 @@ export function shell({
     <aside class="drawer ${settingsOpen ? "open" : ""}">
       <header><div><h2>Dashboard 配置</h2><p>7 个观测域、自定义图表、刷新与阈值均保存为 JSON</p></div><button id="settings-close">×</button></header>
       <label>自动刷新<select id="refresh-interval"><option value="5000">5 秒</option><option value="15000">15 秒</option><option value="30000">30 秒</option><option value="60000">60 秒</option><option value="0">关闭</option></select></label>
-      <div class="drawer-domain-note"><b>观测域结构</b><span>Overview 保留核心指标；其他图表在对应观测域通过“创建图表”添加、删除和排序。</span></div>
+      <div class="drawer-domain-note"><b>观测域结构</b><span>Overview 保留核心指标并汇总收藏图表；其他图表可在对应观测域创建、收藏、删除和排序。</span></div>
       <div class="alert-settings">
         <div><label>月度成本预算（USD）<input id="cost-budget" type="number" min="0" step="1" value="${Number(config.thresholds.costBudgetUsd || 0)}"></label>
         <label>Session 卡住阈值（小时）<input id="session-stuck-hours" type="number" min="0.1" step="0.5" value="${Number(config.thresholds.sessionStuckMs || 3600000) / 3600000}"></label></div>
