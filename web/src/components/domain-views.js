@@ -1,13 +1,13 @@
 import { compact, esc, money, ms, num, shortTime } from "../format.js";
 import { agentStatus, percentile, sessionDuration, sessionSummary } from "../observability-model.js";
-import { moduleHTML } from "./modules.js";
+import { moduleHTML, sectionKpiEditorHTML } from "./modules.js";
 
 const empty = (text = "当前筛选范围内暂无数据") => `<div class="empty">${esc(text)}</div>`;
 const table = (headers, rows) => `<div class="table-wrap"><table><thead><tr>${headers.map((item) => `<th>${item}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
 
-function panel(id, title, body, meta = "", className = "") {
+function panel(id, title, body, meta = "", className = "", editBtn = "") {
   return `<article class="panel domain-panel ${className}" data-module="${esc(id)}">
-    <header><div><h2>${esc(title)}</h2>${meta ? `<span class="panel-meta">${esc(meta)}</span>` : ""}</div></header>
+    <header><div><h2>${esc(title)}</h2>${meta ? `<span class="panel-meta">${esc(meta)}</span>` : ""}</div>${editBtn}</header>
     ${body}
   </article>`;
 }
@@ -29,22 +29,29 @@ function completedRuns(agents) {
     : Math.max(0, sum(agents, "runs") - sum(agents, "runErrors") - sum(agents, "activeRuns"));
 }
 
-function overviewSummary(data) {
+function overviewSummary(data, config, sectionKpiEditor) {
   const agents = data.agents || [];
   const sessions = data.sessions || [];
   const runs = sum(agents, "runs");
   const errors = sum(agents, "runErrors") + sum(agents, "llmErrors") + sum(agents, "toolErrors");
   const onlineAgents = new Set(sessions.filter((row) => row.status === "active").map((row) => row.agentId).filter(Boolean)).size;
   const successRate = runs ? 100 * completedRuns(agents) / runs : 100;
-  return panel("domain-overview-summary", "核心指标", metricStrip([
-    { label: "在线 Agent", value: num(onlineAgents), note: `${agents.length} 个有观测数据` },
-    { label: "活跃 Session", value: num(sessions.filter((row) => row.status === "active").length), note: `${sessions.length} 个会话` },
-    { label: "任务数", value: compact(runs), note: `${sum(agents, "runErrors")} 个失败` },
-    { label: "成功率", value: `${successRate.toFixed(1)}%`, note: "Agent Run" },
-    { label: "Token", value: compact(sum(agents, "totalTokens")), note: `${compact(sum(agents, "cacheReadTokens"))} cache read` },
-    { label: "Cost", value: money(sum(agents, "costUsd")), note: "所选时间范围" },
-    { label: "异常数", value: compact(errors), note: "Agent + LLM + Tool" , level: errors ? "critical" : "" },
-  ]), "全局运行规模与健康度", "domain-full");
+  const allMetrics = {
+    onlineAgents: { label: "在线 Agent", value: num(onlineAgents), note: `${agents.length} 个有观测数据` },
+    activeSessions: { label: "活跃 Session", value: num(sessions.filter((row) => row.status === "active").length), note: `${sessions.length} 个会话` },
+    runs: { label: "任务数", value: compact(runs), note: `${sum(agents, "runErrors")} 个失败` },
+    successRate: { label: "成功率", value: `${successRate.toFixed(1)}%`, note: "Agent Run" },
+    totalTokens: { label: "Token", value: compact(sum(agents, "totalTokens")), note: `${compact(sum(agents, "cacheReadTokens"))} cache read` },
+    cost: { label: "Cost", value: money(sum(agents, "costUsd")), note: "所选时间范围" },
+    errors: { label: "异常数", value: compact(errors), note: "Agent + LLM + Tool", level: errors ? "critical" : "" },
+  };
+  const visibleKpis = (config?.sectionKpis?.overview || []).filter((m) => m.visible);
+  const metrics = visibleKpis.map((m) => allMetrics[m.id]).filter(Boolean);
+  const editBtn = sectionKpiEditor === "overview"
+    ? "<button class=\"kpi-edit-btn active\" data-section-kpi-edit=\"overview\" title=\"编辑指标\">✓</button>"
+    : "<button class=\"kpi-edit-btn\" data-section-kpi-edit=\"overview\" title=\"编辑指标\">✎</button>";
+  const editor = sectionKpiEditor === "overview" ? sectionKpiEditorHTML("overview", config) : "";
+  return panel("domain-overview-summary", "核心指标", metricStrip(metrics) + editor, "全局运行规模与健康度", "domain-full", editBtn);
 }
 
 function agentSummary(data) {
@@ -301,23 +308,27 @@ function errorsTable(data) {
   </div>`, "Agent / LLM / Tool / System", "domain-full");
 }
 
-export function domainSummaryHTML(domain, data, config, sessionDetail, kpiEditorOpen, alerts = []) {
-  if (domain === "overview") return overviewSummary(data);
+export function domainSummaryHTML(domain, data, config, sessionDetail, kpiEditorOpen, alerts = [], sectionKpiEditor = null) {
+  if (domain === "overview") return overviewSummary(data, config, sectionKpiEditor);
   if (domain === "agents") return agentSummary(data);
   if (domain === "sessions") return sessionsSummary(data);
   if (domain === "models") return modelSummary(data);
   if (domain === "tools") return toolSummary(data);
   if (domain === "infrastructure") return infrastructureSummary(data);
   if (domain === "errors") return errorsSummary(data, alerts);
-  return moduleHTML("overview", data, config, sessionDetail, kpiEditorOpen, { draggable: false });
+  return moduleHTML("overview", data, config, sessionDetail, kpiEditorOpen, { draggable: false, sectionKpiEditor });
 }
 
-export function domainDetailHTML(domain, data, config, sessionDetail, kpiEditorOpen, alerts = []) {
+export function domainDetailHTML(domain, data, config, sessionDetail, kpiEditorOpen, alerts = [], sectionKpiEditor = null) {
+  if (domain === "overview") {
+    return moduleHTML("cost_trends", data, config, sessionDetail, kpiEditorOpen, { draggable: false, sectionKpiEditor })
+      + moduleHTML("errors_cost", data, config, sessionDetail, kpiEditorOpen, { draggable: false, sectionKpiEditor });
+  }
   if (domain === "agents") {
-    return moduleHTML("heatmap", data, config, sessionDetail, kpiEditorOpen, { draggable: false }) + agentTable(data);
+    return moduleHTML("heatmap", data, config, sessionDetail, kpiEditorOpen, { draggable: false, sectionKpiEditor }) + agentTable(data);
   }
   if (domain === "sessions") {
-    return moduleHTML("sessions", data, config, sessionDetail, kpiEditorOpen, { draggable: false }) + sessionTable(data);
+    return moduleHTML("sessions", data, config, sessionDetail, kpiEditorOpen, { draggable: false, sectionKpiEditor }) + sessionTable(data);
   }
   if (domain === "models") return modelTable(data) + costAttribution(data, config);
   if (domain === "tools") return toolHeatmap(data) + toolTable(data);

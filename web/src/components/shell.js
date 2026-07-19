@@ -5,14 +5,17 @@ import { customChartBuilderHTML, customChartPanelHTML } from "./custom-charts.js
 import { OBSERVABILITY_DOMAINS, chartsForDomain, favoriteCharts, observabilityDomain } from "../observability-model.js";
 import { domainDetailHTML, domainSummaryHTML } from "./domain-views.js";
 
-function fmtLocal(iso) {
+function fmtLocal(iso, range) {
   const d = new Date(iso);
-  return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  if (range && ["1h", "6h", "24h"].includes(range)) {
+    return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  }
+  return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 export function shell({
   config, data, filters, filterOptions, viewFilters, activeDomain, loading, error,
-  settingsOpen, sessionDetail, connectionLost, dataStale, kpiEditorOpen, customBuilder, alerts = [],
+  settingsOpen, sessionDetail, connectionLost, dataStale, kpiEditorOpen, customBuilder, alerts = [], sectionKpiEditor,
 }) {
   const instances = data?.status?.instances || [];
   const agents = data?.agents || [];
@@ -59,14 +62,14 @@ export function shell({
     ${!compatible ? `<div class="banner">前后端版本不匹配：面板需要 API v3 / timeseries-v3。</div>` : ""}
     ${connectionLost ? `<div class="banner">正在重连…${dataStale ? " 当前显示的数据可能已过期。" : ""}</div>` : ""}
     <main>
-      <div class="page-title"><div><span class="page-kicker">${esc(domain.label)} · ${esc(domain.phase)}</span><h1>${esc(domain.name)}</h1><p>${esc(domain.description)} · ${filters.range.toUpperCase()}　${filters.instanceId ? '实例 ' + esc(filters.instanceId) + ' · ' : ''}${filters.agentId ? 'Agent ' + esc(filters.agentId) + ' · ' : ''}${fmtLocal(filters.from)} — ${fmtLocal(filters.to)}</p></div><div class="page-actions"><button id="custom-chart-create" class="create-chart-button"><span>＋</span>创建图表</button><button id="refresh">${loading ? "刷新中…" : "立即刷新"}</button></div></div>
+      <div class="page-title"><div><span class="page-kicker">${esc(domain.label)} · ${esc(domain.phase)}</span><h1>${esc(domain.name)}</h1><p>${esc(domain.description)} · ${filters.range.toUpperCase()}　${filters.instanceId ? '实例 ' + esc(filters.instanceId) + ' · ' : ''}${filters.agentId ? 'Agent ' + esc(filters.agentId) + ' · ' : ''}${fmtLocal(filters.from, filters.range)} — ${fmtLocal(filters.to, filters.range)}</p></div><div class="page-actions"><button id="custom-chart-create" class="create-chart-button"><span>＋</span>创建图表</button><button id="refresh">${loading ? "刷新中…" : "立即刷新"}</button></div></div>
       ${contextualFilters}
       ${error ? `<div class="banner error">${esc(error)}</div>` : ""}
       <section id="dashboard" class="dashboard domain-${domain.id} ${loading && !data ? "loading" : ""}">${data
-        ? domainSummaryHTML(domain.id, data, config, sessionDetail, kpiEditorOpen, alerts)
+        ? domainSummaryHTML(domain.id, data, config, sessionDetail, kpiEditorOpen, alerts, sectionKpiEditor)
           + favoriteSection
           + charts.map((item) => customChartPanelHTML(item, data)).join("")
-          + domainDetailHTML(domain.id, data, config, sessionDetail, kpiEditorOpen, alerts)
+          + domainDetailHTML(domain.id, data, config, sessionDetail, kpiEditorOpen, alerts, sectionKpiEditor)
         : `<div class="skeleton">正在加载观测指标…</div>`}</section>
     </main>
     <div class="drawer-backdrop ${settingsOpen ? "open" : ""}" id="drawer-backdrop"></div>

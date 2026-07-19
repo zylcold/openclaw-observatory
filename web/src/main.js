@@ -26,6 +26,7 @@ let loading = false;
 let error = "";
 let settingsOpen = false;
 let kpiEditorOpen = false;
+let sectionKpiEditor = null; // section id whose KPI editor is open
 let customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", secondaryMetric: "", sizeMetric: "", title: "", width: "half" };
 let refreshTimer = null;
 let streamTimer = null;
@@ -41,6 +42,7 @@ let connectionLost = navigator.onLine === false;
 let alertState = loadAlertState();
 let dataStale = false;
 let refreshFailures = 0;
+const domainScrollCache = new Map();
 let streamBackoffMs = 1000;
 let streamReconnectTimer = null;
 
@@ -115,6 +117,17 @@ function restoreView(view) {
   window.scrollTo(view.windowX, view.windowY);
 }
 
+function scrollDomainNavToActive() {
+  const nav = document.querySelector('.domain-nav > div');
+  const active = document.querySelector('.domain-nav button.active');
+  if (!nav || !active) return;
+  const navRect = nav.getBoundingClientRect();
+  const activeRect = active.getBoundingClientRect();
+  if (activeRect.left < navRect.left || activeRect.right > navRect.right) {
+    active.scrollIntoView({ inline: 'center', block: 'nearest' });
+  }
+}
+
 function render({ preserveView = false, deferWhileInteracting = false } = {}) {
   if (deferWhileInteracting && interactionActive()) {
     deferredRender = true;
@@ -133,7 +146,7 @@ function render({ preserveView = false, deferWhileInteracting = false } = {}) {
     const viewConfig = { ...config, customCharts: chartsForView(config.customCharts, activeDomain) };
     app.innerHTML = shell({
       config, data: viewData, filters, filterOptions: domainFilterOptions(data), viewFilters, activeDomain,
-      loading, error, settingsOpen, sessionDetail, connectionLost, dataStale, kpiEditorOpen, customBuilder, alerts,
+      loading, error, settingsOpen, sessionDetail, connectionLost, dataStale, kpiEditorOpen, customBuilder, alerts, sectionKpiEditor,
     });
     const interval = document.getElementById("refresh-interval");
     if (interval) interval.value = String(config.refreshInterval);
@@ -141,8 +154,10 @@ function render({ preserveView = false, deferWhileInteracting = false } = {}) {
     if (viewData) requestAnimationFrame(() => {
       try { paintCharts(viewData, viewConfig); } catch(e) { console.error("paintCharts error:", e); }
       restoreView(view);
+      scrollDomainNavToActive();
       hasRenderedData = true;
     });
+    if (!viewData) requestAnimationFrame(() => scrollDomainNavToActive());
   } catch(e) {
     console.error("render error:", e);
     app.innerHTML = '<div style="padding:40px;color:#ff647c;font-family:monospace;white-space:pre-wrap">Render Error: ' + (e.stack || e.message || String(e)) + '</div>';
@@ -234,10 +249,18 @@ function updateConfig(next) {
 
 function bind() {
   document.querySelectorAll("[data-observability-domain]").forEach((button) => button.addEventListener("click", () => {
-    activeDomain = normalizeDomain(button.dataset.observabilityDomain);
+    const newDomain = normalizeDomain(button.dataset.observabilityDomain);
+    const currentScroll = { x: window.scrollX, y: window.scrollY };
+    domainScrollCache.set(activeDomain, currentScroll);
+    const savedScroll = domainScrollCache.get(newDomain) || currentScroll;
+    activeDomain = newDomain;
     customBuilder = { open: false, step: 1, chartType: "", dataset: "", dimensions: [], metric: "", secondaryMetric: "", sizeMetric: "", title: "", width: "half" };
     writeURLState();
     render({ preserveView: false });
+    requestAnimationFrame(() => {
+      window.scrollTo(savedScroll.x, savedScroll.y);
+      scrollDomainNavToActive();
+    });
   }));
   document.querySelectorAll("[data-range]").forEach((button) => button.addEventListener("click", () => {
     filters = timeFilters(button.dataset.range, filters.instanceId, filters.agentId); writeURLState(); refresh({ keepRange: true, forceRender: true });
@@ -376,7 +399,7 @@ function bind() {
     });
     render({ preserveView: true });
   }));
-  document.getElementById("kpi-edit-toggle")?.addEventListener("click", () => { kpiEditorOpen = !kpiEditorOpen; render({ preserveView: true }); });
+  document.getElementById("kpi-edit-toggle")?.addEventListener("click", () => { kpiEditorOpen = !kpiEditorOpen; sectionKpiEditor = null; render({ preserveView: true }); });
   document.querySelectorAll("[data-kpi-visible]").forEach((input) => input.addEventListener("change", () => {
     var kpiId = input.dataset.kpiVisible;
     var checked = input.checked;
@@ -385,6 +408,29 @@ function bind() {
     if (existing) existing.visible = checked;
     else metrics.push({ id: kpiId, visible: checked });
     config = saveConfig({ ...config, kpiMetrics: metrics });
+    render({ preserveView: true });
+  }));
+  // Section KPI editor toggle
+  document.querySelectorAll("[data-section-kpi-edit]").forEach((button) => button.addEventListener("click", () => {
+    const section = button.dataset.sectionKpiEdit;
+    sectionKpiEditor = sectionKpiEditor === section ? null : section;
+    kpiEditorOpen = false;
+    render({ preserveView: true });
+  }));
+  // Section KPI checkbox changes (minimum 2 visible)
+  document.querySelectorAll("[data-section-kpi-visible]").forEach((input) => input.addEventListener("change", () => {
+    const [section, kpiId] = input.dataset.sectionKpiVisible.split(":");
+    var sectionMetrics = [...(config.sectionKpis?.[section] || [])];
+    var existing = sectionMetrics.find((m) => m.id === kpiId);
+    var visibleCount = sectionMetrics.filter((m) => m.visible).length;
+    // Prevent unchecking if only 2 visible
+    if (existing && existing.visible && !input.checked && visibleCount <= 2) {
+      input.checked = true;
+      return;
+    }
+    if (existing) existing.visible = input.checked;
+    else sectionMetrics.push({ id: kpiId, visible: input.checked });
+    config = saveConfig({ ...config, sectionKpis: { ...config.sectionKpis, [section]: sectionMetrics } });
     render({ preserveView: true });
   }));
   document.getElementById("refresh-interval")?.addEventListener("change", (event) => updateConfig({ ...config, refreshInterval: Number(event.target.value) }));
@@ -606,9 +652,11 @@ if (initialSession) {
   loadSession(initialSession).then((d) => { sessionDetail = d; }).catch(() => {}).finally(() => {
     render();
     refresh();
+    requestAnimationFrame(() => scrollDomainNavToActive());
   });
 } else {
   render();
   refresh();
+  requestAnimationFrame(() => scrollDomainNavToActive());
 }
 connectStream();
