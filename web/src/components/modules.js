@@ -1,6 +1,6 @@
 import { comboChart, doughnutChart, lineChart, palette, scatterChart, updateChartData, updateDoughnut, updateScatter, hasChart } from "../charts.js";
 import { bytes, compact, esc, money, ms, num, shortTime, setShortTimeRange } from "../format.js";
-import { KPI_METRICS } from "../config.js";
+import { KPI_METRICS, SECTION_KPIS } from "../config.js";
 import { paintCustomCharts, updateCustomCharts } from "./custom-charts.js";
 import { buildTraceTree, traceSummary } from "../trace-model.js";
 
@@ -97,6 +97,19 @@ function kpiEditorHTML(config, kpiNames) {
     });
   }
   return '<div class="kpi-editor"><div class="kpi-editor-header"><span>指标管理</span><small>' + visibleCount + ' 个展示中 · 点击勾选 / 拖拽排序</small></div><div class="kpi-editor-list" id="kpi-editor-list">' + rows.join('') + '</div></div>';
+}
+
+export function sectionKpiEditorHTML(sectionId, config) {
+  const defs = SECTION_KPIS[sectionId];
+  if (!defs) return "";
+  const metrics = config.sectionKpis?.[sectionId] || [];
+  const defMap = new Map(defs);
+  const visibleCount = metrics.filter((m) => m.visible).length;
+  var rows = metrics.map((m) => {
+    var name = esc(defMap.get(m.id) || m.id);
+    return '<label class="kpi-check" data-section="' + sectionId + '" data-section-kpi-id="' + m.id + '"><input type="checkbox" data-section-kpi-visible="' + sectionId + ':' + m.id + '" ' + (m.visible ? 'checked' : '') + '>' + name + '</label>';
+  });
+  return '<div class="kpi-editor"><div class="kpi-editor-header"><span>指标管理</span><small>' + visibleCount + ' 个展示中 · 最少 2 个</small></div><div class="kpi-editor-list" id="section-kpi-editor-list">' + rows.join('') + '</div></div>';
 }
 
 function agentTable(data) {
@@ -252,7 +265,7 @@ function errorsCost(data) {
   return "<div class=\"split\"><section><h3>Error Categories</h3>" + errorRows + "</section><section><h3>Model Costs</h3>" + modelRows + "</section></div>";
 }
 
-function costTrendsHTML(data, config) {
+function costTrendsHTML(data, config, sectionKpiEditorOpen) {
   const summary = data?.costSummary || {};
   const trends = data?.costTrends || [];
   const totalCost = Number(summary.totalCost || 0);
@@ -261,30 +274,32 @@ function costTrendsHTML(data, config) {
   const lastMonthCost = Number(summary.lastMonthCost || 0);
   const totalRequests = Number(summary.totalRequests || 0);
   const avgCost = totalRequests ? totalCost / totalRequests : 0;
-
-  // Budget alert
   const budget = config?.thresholds?.costBudgetUsd || 0;
   const budgetUsed = budget > 0 ? Math.min(100, 100 * lastMonthCost / budget) : 0;
-  var budgetAlert = "";
-  if (budget > 0 && budgetUsed >= 100) budgetAlert = "critical";
-  else if (budget > 0 && budgetUsed >= 80) budgetAlert = "warning";
+  var budgetLevel = "";
+  if (budget > 0 && budgetUsed >= 100) budgetLevel = "critical";
+  else if (budget > 0 && budgetUsed >= 80) budgetLevel = "warning";
 
-  var budgetHTML;
-  if (budget > 0) {
-    budgetHTML = "<div class=\"kpi " + budgetAlert + "\"><span>Monthly Budget</span><strong>" + money(budget) + "</strong><small>" + budgetUsed.toFixed(0) + "% used · " + money(Math.max(0, budget - lastMonthCost)) + " left</small></div>";
-  } else {
-    budgetHTML = "<div class=\"kpi\"><span>Monthly Budget</span><strong>Not Set</strong><small>Set costBudgetUsd in config</small></div>";
-  }
+  // Compute all KPI values
+  const allKpis = {
+    totalCost: { label: "Total Cost", value: money(totalCost), note: num(totalRequests) + " requests", level: "" },
+    today: { label: "Today", value: money(lastDayCost), note: avgCost ? "avg " + money(avgCost) + "/req" : "", level: "" },
+    thisWeek: { label: "This Week", value: money(lastWeekCost), note: "", level: "" },
+    thisMonth: { label: "This Month", value: money(lastMonthCost), note: "", level: budgetLevel },
+    monthlyBudget: { label: "Monthly Budget", value: budget > 0 ? money(budget) : "Not Set", note: budget > 0 ? budgetUsed.toFixed(0) + "% used · " + money(Math.max(0, budget - lastMonthCost)) + " left" : "Set costBudgetUsd in config", level: budgetLevel },
+    avgCostPerReq: { label: "Avg Cost/Request", value: money(avgCost), note: "", level: "" },
+  };
 
-  var kpiItems = [
-    { label: "Total Cost", value: money(totalCost), note: num(totalRequests) + " requests" },
-    { label: "Today", value: money(lastDayCost), note: avgCost ? "avg " + money(avgCost) + "/req" : "" },
-    { label: "This Week", value: money(lastWeekCost), note: "" },
-    { label: "This Month", value: money(lastMonthCost), note: "" },
-  ];
+  // Filter by visible KPIs from config
+  const visibleKpis = (config.sectionKpis?.cost_trends || []).filter((m) => m.visible);
   var kpiHTML = "<div class=\"kpi-grid\">";
-  kpiItems.forEach((k) => { kpiHTML += "<div class=\"kpi\"><span>" + k.label + "</span><strong>" + k.value + "</strong><small>" + k.note + "</small></div>"; });
-  kpiHTML += budgetHTML + "</div>";
+  visibleKpis.forEach((m) => {
+    var kpi = allKpis[m.id];
+    if (!kpi) return;
+    kpiHTML += "<div class=\"kpi " + kpi.level + "\"><span>" + esc(kpi.label) + "</span><strong>" + kpi.value + "</strong><small>" + esc(kpi.note) + "</small></div>";
+  });
+  kpiHTML += "</div>";
+  if (sectionKpiEditorOpen) kpiHTML += sectionKpiEditorHTML("cost_trends", config);
 
   // Cost trend chart
   var chartHTML = chart("cost-trend-chart", true);
@@ -318,6 +333,7 @@ function toolRanking(tools) {
 }
 
 export function moduleHTML(id, data, config, sessionDetail, kpiEditorOpen, options = {}) {
+  const sectionEditor = options.sectionKpiEditor || null;
   var body = "";
   if (id === "overview") body = overview(data, config, kpiEditorOpen);
   if (id === "resources") body = chart("resources-chart");
@@ -331,10 +347,14 @@ export function moduleHTML(id, data, config, sessionDetail, kpiEditorOpen, optio
   if (id === "sessions") body = sessions(data, sessionDetail);
   if (id === "errors_cost") body = errorsCost(data);
   if (id === "activity") body = activity(data);
-  if (id === "cost_trends") body = costTrendsHTML(data, config);
-  var editBtn = id === "overview"
-    ? "<button class=\"kpi-edit-btn" + (kpiEditorOpen ? " active" : "") + "\" id=\"kpi-edit-toggle\" title=\"编辑指标\">" + (kpiEditorOpen ? "✓" : "✎") + "</button>"
-    : "";
+  if (id === "cost_trends") body = costTrendsHTML(data, config, sectionEditor === "cost_trends");
+  // Edit button: overview uses kpiEditorOpen, other sections use sectionKpiEditor
+  var editBtn = "";
+  if (id === "overview") {
+    editBtn = "<button class=\"kpi-edit-btn" + (kpiEditorOpen ? " active" : "") + "\" id=\"kpi-edit-toggle\" title=\"编辑指标\">" + (kpiEditorOpen ? "✓" : "✎") + "</button>";
+  } else if (SECTION_KPIS[id]) {
+    editBtn = "<button class=\"kpi-edit-btn" + (sectionEditor === id ? " active" : "") + "\" data-section-kpi-edit=\"" + id + "\" title=\"编辑指标\">" + (sectionEditor === id ? "✓" : "✎") + "</button>";
+  }
   const draggable = options.draggable !== false;
   const dragHandle = draggable ? "<span class=\"drag\" title=\"Drag to reorder\">⠿</span>" : "";
   return "<article class=\"panel module-" + id + "\" draggable=\"" + draggable + "\" data-module=\"" + id + "\"><header><div>" + dragHandle + "<h2>" + names[id] + "</h2></div>" + editBtn + "</header>" + body + "</article>";
@@ -392,9 +412,10 @@ function paintCostTrendChart(data) {
   var trends = data?.costTrends || [];
   if (!trends.length) return;
   var periods = [...new Set(trends.map((r) => r.period))].sort();
+  var periodLabels = periods.map(shortTime);
   var modelKeys = [...new Set(trends.map((r) => r.provider + "/" + r.model))];
   var byModelPeriod = new Map(trends.map((r) => [r.provider + "/" + r.model + "|" + r.period, Number(r.costUsd || 0)]));
-  comboChart("cost-trend-chart", periods, modelKeys.map((key, i) => ({
+  comboChart("cost-trend-chart", periodLabels, modelKeys.map((key, i) => ({
     type: "bar",
     label: key,
     data: periods.map((p) => byModelPeriod.get(key + "|" + p) || 0),

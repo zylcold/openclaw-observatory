@@ -32,12 +32,39 @@ export const KPI_METRICS = [
   ["avgCpu", "Avg CPU %", false],
 ];
 
+// Per-section KPI definitions (for sections other than overview, which uses KPI_METRICS).
+export const SECTION_KPIS = {
+  overview: [
+    ["onlineAgents", "在线 Agent", true],
+    ["activeSessions", "活跃 Session", true],
+    ["runs", "任务数", true],
+    ["successRate", "成功率", true],
+    ["totalTokens", "Token", true],
+    ["cost", "Cost", true],
+    ["errors", "异常数", true],
+  ],
+  cost_trends: [
+    ["totalCost", "Total Cost", true],
+    ["today", "Today", true],
+    ["thisWeek", "This Week", true],
+    ["thisMonth", "This Month", true],
+    ["monthlyBudget", "Monthly Budget", true],
+    ["avgCostPerReq", "Avg Cost/Request", false],
+  ],
+};
+
 export const DEFAULT_CONFIG = {
   version: 3,
   theme: "dark",
   refreshInterval: 15000,
   modules: MODULES.map(([id]) => ({ id, visible: true })),
   kpiMetrics: KPI_METRICS.map(([id, , vis]) => ({ id, visible: vis })),
+  sectionKpis: Object.fromEntries(
+    Object.entries(SECTION_KPIS).map(([sectionId, kpis]) => [
+      sectionId,
+      kpis.map(([id, , vis]) => ({ id, visible: vis })),
+    ])
+  ),
   customCharts: normalizeCustomCharts(DEFAULT_CUSTOM_CHARTS),
   thresholds: {
     errorRateWarning: 5, errorRateCritical: 15,
@@ -72,6 +99,22 @@ export function normalizeConfig(input = {}) {
     }
   }
   for (const [id, , vis] of KPI_METRICS) if (!seenKpis.has(id)) kpiMetrics.push({ id, visible: vis });
+  // Normalize section KPIs
+  const sectionKpis = {};
+  for (const [sectionId, defs] of Object.entries(SECTION_KPIS)) {
+    const inputSection = input.sectionKpis?.[sectionId];
+    const known = new Map(defs);
+    const seen = new Set();
+    const list = [];
+    for (const item of Array.isArray(inputSection) ? inputSection : []) {
+      if (known.has(item?.id) && !seen.has(item.id)) {
+        list.push({ id: item.id, visible: item.visible !== false });
+        seen.add(item.id);
+      }
+    }
+    for (const [id, , vis] of defs) if (!seen.has(id)) list.push({ id, visible: vis });
+    sectionKpis[sectionId] = list;
+  }
   const interval = Number(input.refreshInterval);
   const hasCustomCharts = Object.prototype.hasOwnProperty.call(input, "customCharts");
   let customCharts = input.customCharts;
@@ -86,6 +129,7 @@ export function normalizeConfig(input = {}) {
     refreshInterval: [5000, 15000, 30000, 60000, 0].includes(interval) ? interval : DEFAULT_CONFIG.refreshInterval,
     modules,
     kpiMetrics,
+    sectionKpis,
     customCharts: normalizeCustomCharts(customCharts, { useDefaults: !hasCustomCharts }),
     thresholds: { ...DEFAULT_CONFIG.thresholds, ...(input.thresholds || {}) },
   };
