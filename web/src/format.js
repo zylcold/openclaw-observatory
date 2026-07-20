@@ -22,3 +22,17 @@ export const shortTime = (value) => {
   return _currentRangeMs <= 86400000 ? _hourFmt.format(d) : _fullFmt.format(d);
 };
 export const fullShortTime = (value) => _fullFmt.format(new Date(value));
+
+// Format a cost-trend period string (YYYY-MM-DD, YYYY-WNN, or YYYY-MM) into a compact label.
+const _monthFmt = new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" });
+const _monthYearFmt = new Intl.DateTimeFormat("zh-CN", { month: "short", year: "numeric" });
+export const periodLabel = (period) => {
+  var s = String(period || "");
+  // YYYY-MM-DD → e.g. "7月21日"
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return _monthFmt.format(new Date(s + "T00:00:00"));
+  // YYYY-WNN → "W28"
+  if (/^\d{4}-W\d{2}$/.test(s)) return s.slice(5);
+  // YYYY-MM → "2026年7月"
+  if (/^\d{4}-\d{2}$/.test(s)) return _monthYearFmt.format(new Date(s + "-01T00:00:00"));
+  return s;
+};

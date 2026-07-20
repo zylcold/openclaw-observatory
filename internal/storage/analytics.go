@@ -410,14 +410,15 @@ func (r *Repository) TimeSeries(ctx context.Context, opts ListOptions, bucketSec
 // CostTrends returns daily cost breakdowns grouped by provider/model and agent.
 // The period parameter controls the grouping: "day", "week", or "month".
 func (r *Repository) CostTrends(ctx context.Context, opts ListOptions, period string) ([]map[string]any, error) {
+	// Shift to local timezone (UTC+8) for correct day grouping
 	var dateFormat string
 	switch period {
 	case "week":
-		dateFormat = `strftime('%Y-W%W', l.started_at)`
+		dateFormat = `strftime('%Y-W%W', datetime(l.started_at, '+8 hours'))`
 	case "month":
-		dateFormat = `strftime('%Y-%m', l.started_at)`
+		dateFormat = `strftime('%Y-%m', datetime(l.started_at, '+8 hours'))`
 	default:
-		dateFormat = `strftime('%Y-%m-%d', l.started_at)`
+		dateFormat = `strftime('%Y-%m-%d', datetime(l.started_at, '+8 hours'))`
 	}
 
 	// Cost by provider/model per period

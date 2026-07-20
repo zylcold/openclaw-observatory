@@ -1,5 +1,5 @@
 import { comboChart, doughnutChart, lineChart, palette, scatterChart, updateChartData, updateDoughnut, updateScatter, hasChart } from "../charts.js";
-import { bytes, compact, esc, money, ms, num, shortTime, setShortTimeRange } from "../format.js";
+import { bytes, compact, esc, money, ms, num, shortTime, setShortTimeRange, periodLabel } from "../format.js";
 import { KPI_METRICS, SECTION_KPIS } from "../config.js";
 import { paintCustomCharts, updateCustomCharts } from "./custom-charts.js";
 import { buildTraceTree, traceSummary } from "../trace-model.js";
@@ -412,7 +412,7 @@ function paintCostTrendChart(data) {
   var trends = data?.costTrends || [];
   if (!trends.length) return;
   var periods = [...new Set(trends.map((r) => r.period))].sort();
-  var periodLabels = periods.map(shortTime);
+  var periodLabels = periods.map(periodLabel);
   var modelKeys = [...new Set(trends.map((r) => r.provider + "/" + r.model))];
   var byModelPeriod = new Map(trends.map((r) => [r.provider + "/" + r.model + "|" + r.period, Number(r.costUsd || 0)]));
   comboChart("cost-trend-chart", periodLabels, modelKeys.map((key, i) => ({
@@ -488,7 +488,7 @@ export function updateCharts(data, config = {}) {
     var periods = [...new Set(trends.map((r) => r.period))].sort();
     var costModelKeys = [...new Set(trends.map((r) => r.provider + "/" + r.model))];
     var byModelPeriod = new Map(trends.map((r) => [r.provider + "/" + r.model + "|" + r.period, Number(r.costUsd || 0)]));
-    updateChartData("cost-trend-chart", periods, costModelKeys.map((key) => ({
+    updateChartData("cost-trend-chart", periods.map(periodLabel), costModelKeys.map((key) => ({
       data: periods.map((p) => byModelPeriod.get(key + "|" + p) || 0),
       label: key,
     })));

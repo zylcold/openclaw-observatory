@@ -298,7 +298,10 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query MCP calls")
 		return
 	}
-	costTrends, err := s.repo.CostTrends(r.Context(), o, "day")
+	cost7d := o
+	cost7d.To = time.Now().UTC().Format(time.RFC3339Nano)
+	cost7d.From = time.Now().UTC().AddDate(0, 0, -6).Format(time.RFC3339Nano)
+	costTrends, err := s.repo.CostTrends(r.Context(), cost7d, "day")
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query cost trends")
 		return
