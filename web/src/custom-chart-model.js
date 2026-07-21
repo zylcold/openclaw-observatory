@@ -61,20 +61,28 @@ export const DIMENSION_GROUPS = [
     id: "agents",
     domain: "agents",
     label: "Agent 运行",
-    description: "按时间与 Agent 拆分运行指标",
+    description: "按时间、Agent 与模型拆分运行指标",
     dimensions: [
       dimension("time", "时间", (row) => row.time),
       dimension("agent", "Agent", (row) => row.agentId || "unknown"),
+      dimension("model", "模型", (row) => (row.provider || "unknown") + "/" + (row.model || "unknown")),
     ],
-    rows: (data, dimensions) => dimensions.includes("time") ? data?.timeseries?.agents || [] : data?.agents || [],
+    rows: (data, dimensions) => {
+      if (dimensions.includes("model")) return data?.agentModels || [];
+      if (dimensions.includes("time")) return data?.timeseries?.agents || [];
+      return data?.agents || [];
+    },
     metrics: [
       metric("runs", "Runs", (row) => row.runs),
       metric("errors", "错误数", (row) => row.errors ?? row.runErrors),
       metric("durationMs", "总耗时", (row) => row.durationMs ?? row.totalDurationMs, "ms"),
       metric("successRate", "成功率", (row) => row.successRate ?? (100 - number(row.errorRate)), "%"),
-      metric("totalTokens", "Token 总量", (row) => row.totalTokens),
+      metric("totalTokens", "Token 总量", (row) => row.totalTokens ?? (number(row.inputTokens) + number(row.outputTokens) + number(row.cacheReadTokens) + number(row.cacheWriteTokens))),
+      metric("inputTokens", "输入 Token", (row) => row.inputTokens),
+      metric("outputTokens", "输出 Token", (row) => row.outputTokens),
       metric("costUsd", "成本", (row) => row.costUsd, "USD"),
       metric("toolCalls", "Tool / MCP 调用", (row) => row.toolCalls),
+      metric("requests", "请求数", (row) => row.requests),
     ],
   },
   {

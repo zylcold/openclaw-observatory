@@ -342,7 +342,7 @@ export function moduleHTML(id, data, config, sessionDetail, kpiEditorOpen, optio
   if (id === "token_share") body = chart("token-share-chart");
   if (id === "tool_share") body = chart("tool-share-chart") + "<div class=\"tool-ranking-wrap\">" + toolRanking(data.tools) + "</div>";
   if (id === "scatter") body = chart("scatter-chart");
-  if (id === "agent_compare") body = chart("agent-chart") + agentTable(data);
+  if (id === "agent_compare") body = chart("agent-chart") + "<div class=\"chart tall\"><canvas id=\"agent-model-chart\"></canvas></div>" + agentTable(data);
   if (id === "heatmap") body = heatmap(data);
   if (id === "sessions") body = sessions(data, sessionDetail);
   if (id === "errors_cost") body = errorsCost(data);
@@ -403,9 +403,27 @@ export function paintCharts(data, config = {}) {
     { type: "line", label: "Error %", data: data.agents.map((a) => a.errorRate), borderColor: palette[4], yAxisID: "y2" },
   ], { scales: { y: { beginAtZero: true }, y1: { position: "right", beginAtZero: true, grid: { drawOnChartArea: false } }, y2: { display: false } } });
 
+  // Agent × Model stacked token chart
+  paintAgentModelChart(data);
+
   // Cost trend chart
   paintCostTrendChart(data);
   paintCustomCharts(data, config.customCharts || []);
+}
+
+function paintAgentModelChart(data) {
+  var rows = data?.agentModels || [];
+  if (!rows.length) return;
+  var agents = [...new Set(rows.map((r) => r.agentId || "unknown"))];
+  var modelKeys = [...new Set(rows.map((r) => (r.provider || "unknown") + "/" + (r.model || "unknown")))];
+  var byAgentModel = new Map(rows.map((r) => [(r.agentId || "unknown") + "|" + (r.provider || "unknown") + "/" + (r.model || "unknown"), Number(r.totalTokens || 0)]));
+  comboChart("agent-model-chart", agents, modelKeys.map((key, i) => ({
+    type: "bar",
+    label: key,
+    data: agents.map((a) => byAgentModel.get(a + "|" + key) || 0),
+    backgroundColor: palette[i % palette.length] + "88",
+    stack: "tokens",
+  })), { plugins: { legend: { position: "bottom" } }, scales: { y: { beginAtZero: true, stacked: true, title: { display: true, text: "Token" } }, x: { stacked: true } } });
 }
 
 function paintCostTrendChart(data) {
@@ -490,6 +508,18 @@ export function updateCharts(data, config = {}) {
     var byModelPeriod = new Map(trends.map((r) => [r.provider + "/" + r.model + "|" + r.period, Number(r.costUsd || 0)]));
     updateChartData("cost-trend-chart", periods.map(periodLabel), costModelKeys.map((key) => ({
       data: periods.map((p) => byModelPeriod.get(key + "|" + p) || 0),
+      label: key,
+    })));
+  }
+
+  // Agent × Model token chart (optional)
+  if (hasChart("agent-model-chart")) {
+    var amRows = data?.agentModels || [];
+    var amAgents = [...new Set(amRows.map((r) => r.agentId || "unknown"))];
+    var amModelKeys = [...new Set(amRows.map((r) => (r.provider || "unknown") + "/" + (r.model || "unknown")))];
+    var amByAgentModel = new Map(amRows.map((r) => [(r.agentId || "unknown") + "|" + (r.provider || "unknown") + "/" + (r.model || "unknown"), Number(r.totalTokens || 0)]));
+    updateChartData("agent-model-chart", amAgents, amModelKeys.map((key) => ({
+      data: amAgents.map((a) => amByAgentModel.get(a + "|" + key) || 0),
       label: key,
     })));
   }

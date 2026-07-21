@@ -88,6 +88,29 @@ func (r *Repository) AgentStats(ctx context.Context, opts ListOptions) ([]map[st
 	return queryMaps(ctx, r.db, q, analyticsArgs(opts)...)
 }
 
+// AgentModelStats returns per-agent × per-model token usage for stacked bar charts.
+func (r *Repository) AgentModelStats(ctx context.Context, opts ListOptions) ([]map[string]any, error) {
+	q := `WITH ` + agentStatsRunAgentsCTE + `,
+  filtered_runs AS (
+    SELECT * FROM run_agents
+    WHERE (@agent='' OR agent_id=@agent) AND (@status='' OR status=@status)
+  )
+  SELECT f.agent_id AS agentId,
+    COALESCE(NULLIF(l.provider,''),'unknown') AS provider,
+    COALESCE(NULLIF(l.model,''),'unknown') AS model,
+    COUNT(*) AS requests,
+    SUM(l.input_tokens) AS inputTokens,
+    SUM(l.output_tokens) AS outputTokens,
+    SUM(l.cache_read_tokens) AS cacheReadTokens,
+    SUM(l.cache_write_tokens) AS cacheWriteTokens,
+    SUM(l.input_tokens+l.output_tokens+l.cache_read_tokens+l.cache_write_tokens) AS totalTokens,
+    SUM(l.cost_usd) AS costUsd
+  FROM llm_calls l JOIN filtered_runs f ON f.instance_id=l.instance_id AND f.run_id=l.run_id
+  GROUP BY f.agent_id, l.provider, l.model
+  ORDER BY totalTokens DESC`
+	return queryMaps(ctx, r.db, q, analyticsArgs(opts)...)
+}
+
 func (r *Repository) ToolStats(ctx context.Context, opts ListOptions) ([]map[string]any, error) {
 	q := `WITH ` + runAgentsCTE + `,
   tool_events AS (

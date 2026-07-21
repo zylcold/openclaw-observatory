@@ -268,6 +268,11 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query agent stats")
 		return
 	}
+	agentModels, err := s.repo.AgentModelStats(r.Context(), o)
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query agent model stats")
+		return
+	}
 	sessions, err := s.repo.ListSessions(r.Context(), o)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query sessions")
@@ -321,6 +326,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	data(w, map[string]any{
 		"status": status, "timeseries": timeseries, "models": models, "tools": tools, "agents": agents,
+		"agentModels": agentModels,
 		"sessions": sessions, "llmCalls": llmCalls, "errors": errors, "anomalies": anomalies, "subagents": subagents, "mcpCalls": mcpCalls,
 		"costTrends": costTrends, "costSummary": costSummary, "costTrends30d": costTrends30d,
 	})

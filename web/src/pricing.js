@@ -188,6 +188,19 @@ export function patchDashboardCosts(data, pricing = getPricing()) {
     }
   }
 
+  // Patch agent×model stats — compute cost per row from token sums
+  if (Array.isArray(data.agentModels)) {
+    for (const row of data.agentModels) {
+      const p = resolvePricing(row.provider, row.model, pricing);
+      if (p) {
+        const inputT = Number(row.inputTokens || 0) + Number(row.cacheReadTokens || 0);
+        const outputT = Number(row.outputTokens || 0);
+        const cacheWriteT = Number(row.cacheWriteTokens || 0);
+        row.costUsd = inputT * p.input + outputT * p.output + cacheWriteT * p.input;
+      }
+    }
+  }
+
   // Patch agent stats — compute cost from patched model stats using weighted avg cost-per-token
   if (Array.isArray(data.agents) && Array.isArray(data.models)) {
     // Compute total cost and total tokens from already-patched model stats
