@@ -64,6 +64,8 @@ function computeKPIs(data, config) {
     agentCount: { value: num(agents.length), note: agents.map((a) => esc(a.agentId)).slice(0, 5).join(", ") + (agents.length > 5 ? "…" : ""), level: "" },
     maxMemory: { value: bytes(memPoint.maxMemoryBytes || 0), note: "peak resident", level: "" },
     avgCpu: { value: Number(cpuPoint.averageCpuPercent || 0).toFixed(1) + "%", note: "avg CPU", level: "" },
+    lifetimeTokens: { value: compact(Number(data?.lifetime?.totalTokens || 0)), note: "all-time total", level: "" },
+    lifetimeCost: { value: money(Number(data?.lifetime?.totalCostUsd || 0)), note: "all-time total", level: "" },
   };
 }
 

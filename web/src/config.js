@@ -30,6 +30,8 @@ export const KPI_METRICS = [
   ["agentCount", "Agent Count", false],
   ["maxMemory", "Peak Memory", false],
   ["avgCpu", "Avg CPU %", false],
+  ["lifetimeTokens", "Token 总量(累计)", false],
+  ["lifetimeCost", "成本总量(累计)", false],
 ];
 
 // Per-section KPI definitions (for sections other than overview, which uses KPI_METRICS).

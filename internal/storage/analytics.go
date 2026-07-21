@@ -111,6 +111,27 @@ func (r *Repository) AgentModelStats(ctx context.Context, opts ListOptions) ([]m
 	return queryMaps(ctx, r.db, q, analyticsArgs(opts)...)
 }
 
+// LifetimeStats returns all-time totals ignoring time/agent/status filters.
+func (r *Repository) LifetimeStats(ctx context.Context) (map[string]any, error) {
+	q := `SELECT
+	    COUNT(*) AS totalRequests,
+	    SUM(input_tokens) AS totalInputTokens,
+	    SUM(output_tokens) AS totalOutputTokens,
+	    SUM(cache_read_tokens) AS totalCacheReadTokens,
+	    SUM(cache_write_tokens) AS totalCacheWriteTokens,
+	    SUM(input_tokens+output_tokens+cache_read_tokens+cache_write_tokens) AS totalTokens,
+	    SUM(cost_usd) AS totalCostUsd
+	  FROM llm_calls`
+	rows, err := queryMaps(ctx, r.db, q)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return map[string]any{"totalRequests": 0, "totalTokens": 0, "totalCostUsd": 0}, nil
+	}
+	return rows[0], nil
+}
+
 func (r *Repository) ToolStats(ctx context.Context, opts ListOptions) ([]map[string]any, error) {
 	q := `WITH ` + runAgentsCTE + `,
   tool_events AS (

@@ -41,7 +41,19 @@ export const DIMENSION_GROUPS = [
     label: "运行趋势",
     description: "系统、LLM 与资源的时间序列",
     dimensions: [dimension("time", "时间", (row) => row.time)],
-    rows: (data) => data?.timeseries?.points || [],
+    rows: (data) => {
+      const points = data?.timeseries?.points || [];
+      let cumTokens = 0;
+      let cumCost = 0;
+      return points
+        .slice()
+        .sort((a, b) => Date.parse(a.time) - Date.parse(b.time))
+        .map((pt) => {
+          cumTokens += number(pt.inputTokens) + number(pt.outputTokens) + number(pt.cacheReadTokens) + number(pt.cacheWriteTokens);
+          cumCost += number(pt.costUsd);
+          return { ...pt, cumTokens, cumCost };
+        });
+    },
     metrics: [
       metric("runs", "Agent Runs", (row) => row.runs),
       metric("runErrors", "Run 错误", (row) => row.runErrors),
@@ -49,6 +61,8 @@ export const DIMENSION_GROUPS = [
       metric("llmErrorRate", "LLM 错误率", (row) => row.llmErrorRate, "%"),
       metric("totalTokens", "Token 总量", tokenTotal),
       metric("costUsd", "成本", (row) => row.costUsd, "USD"),
+      metric("cumTokens", "Token 总量(累计)", (row) => row.cumTokens),
+      metric("cumCost", "成本(累计)", (row) => row.cumCost, "USD"),
       metric("averageLlmDurationMs", "LLM 平均延迟", (row) => row.averageLlmDurationMs, "ms"),
       metric("toolCalls", "工具调用", (row) => row.toolCalls),
       metric("toolErrors", "工具错误", (row) => row.toolErrors),
@@ -370,6 +384,18 @@ export function buildCustomChartSeries(data, chart) {
 
   const labels = categories.map((category) => formatCategory(categoryDimension.id, category));
   const relationship = chart?.chartType === "scatter" || chart?.chartType === "bubble";
+  const isRadial = ["doughnut", "pie", "polarArea"].includes(chart?.chartType);
+  if (isRadial && seriesDimension) {
+    const flatLabels = [];
+    const flatData = [];
+    for (const name of seriesNames) {
+      for (const category of categories) {
+        flatLabels.push(category + " · " + name);
+        flatData.push(number(categoryValues.get(category).get(name)?.value));
+      }
+    }
+    return { labels: flatLabels, datasets: [{ label: selectedMetric.label, data: flatData }], secondaryDatasets: [], label: selectedMetric.label, unit: selectedMetric.unit, secondaryLabel: "", secondaryUnit: "", sizeLabel: "" };
+  }
   return {
     labels,
     datasets: seriesNames.map((name) => ({
