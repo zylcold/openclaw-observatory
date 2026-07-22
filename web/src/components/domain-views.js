@@ -1,4 +1,4 @@
-import { compact, esc, money, ms, num, shortTime } from "../format.js";
+import { bytes, compact, esc, money, ms, num, shortTime } from "../format.js";
 import { agentStatus, percentile, sessionDuration, sessionSummary } from "../observability-model.js";
 import { moduleHTML, sectionKpiEditorHTML } from "./modules.js";
 
@@ -36,14 +36,35 @@ function overviewSummary(data, config, sectionKpiEditor) {
   const errors = sum(agents, "runErrors") + sum(agents, "llmErrors") + sum(agents, "toolErrors");
   const onlineAgents = new Set(sessions.filter((row) => row.status === "active").map((row) => row.agentId).filter(Boolean)).size;
   const successRate = runs ? 100 * completedRuns(agents) / runs : 100;
+  const llmReqs = sum(agents, "llmRequests");
+  const llmDuration = sum(agents, "llmDurationMs");
+  const avgLatency = llmReqs ? llmDuration / llmReqs : 0;
+  const toolCallsTotal = sum(agents, "toolCalls");
+  const inputTok = sum(agents, "inputTokens");
+  const outputTok = sum(agents, "outputTokens");
+  const cacheRead = sum(agents, "cacheReadTokens");
+  const totalTok = sum(agents, "totalTokens");
+  const cacheRate = totalTok ? (100 * cacheRead / totalTok).toFixed(1) : "0.0";
+  const errorRateVal = runs ? (100 * (sum(agents, "runErrors")) / runs).toFixed(1) : "0.0";
+  const point = [...(data.timeseries?.points || [])].reverse().find((row) => Number(row.diskTotalBytes || 0) > 0) || {};
+  const memPoint = [...(data.timeseries?.points || [])].reverse().find((row) => Number(row.maxMemoryBytes || 0) > 0) || {};
   const allMetrics = {
     onlineAgents: { label: "在线 Agent", value: num(onlineAgents), note: `${agents.length} 个有观测数据` },
     activeSessions: { label: "活跃 Session", value: num(sessions.filter((row) => row.status === "active").length), note: `${sessions.length} 个会话` },
     runs: { label: "任务数", value: compact(runs), note: `${sum(agents, "runErrors")} 个失败` },
     successRate: { label: "成功率", value: `${successRate.toFixed(1)}%`, note: "Agent Run" },
-    totalTokens: { label: "Token", value: compact(sum(agents, "totalTokens")), note: `${compact(sum(agents, "cacheReadTokens"))} cache read` },
+    totalTokens: { label: "Token", value: compact(totalTok), note: `${compact(cacheRead)} cache read` },
     cost: { label: "Cost", value: money(sum(agents, "costUsd")), note: "所选时间范围" },
     errors: { label: "异常数", value: compact(errors), note: "Agent + LLM + Tool", level: errors ? "critical" : "" },
+    llmRequests: { label: "LLM 调用", value: compact(llmReqs), note: `${sum(agents, "llmErrors")} LLM errors` },
+    avgLatency: { label: "平均延迟", value: ms(avgLatency), note: "端到端 LLM" },
+    toolCalls: { label: "Tool 调用", value: compact(toolCallsTotal), note: `${sum(agents, "toolErrors")} errors` },
+    cacheRate: { label: "Cache 命中率", value: cacheRate + "%", note: `${compact(cacheRead)} / ${compact(totalTok)}` },
+    inputTokens: { label: "Input Token", value: compact(inputTok), note: "prompt tokens" },
+    outputTokens: { label: "Output Token", value: compact(outputTok), note: "completion tokens" },
+    errorRate: { label: "错误率", value: errorRateVal + "%", note: `${sum(agents, "runErrors")} of ${runs} runs` },
+    diskUsage: { label: "磁盘用量", value: Number(point.diskUsedPercent || 0).toFixed(1) + "%", note: bytes(point.diskAvailableBytes) + " available" },
+    memoryUsage: { label: "内存用量", value: bytes(memPoint.maxMemoryBytes || 0), note: "peak resident" },
   };
   const visibleKpis = (config?.sectionKpis?.overview || []).filter((m) => m.visible);
   const metrics = visibleKpis.map((m) => allMetrics[m.id]).filter(Boolean);

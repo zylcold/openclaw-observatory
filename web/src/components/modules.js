@@ -303,7 +303,7 @@ function costTrendsHTML(data, config, sectionKpiEditorOpen) {
   kpiHTML += "</div>";
   if (sectionKpiEditorOpen) kpiHTML += sectionKpiEditorHTML("cost_trends", config);
 
-  // Cost trend chart
+  // Cost trend chart (full width)
   var chartHTML = chart("cost-trend-chart", true);
 
   // Cost by model table from trends
@@ -316,10 +316,26 @@ function costTrendsHTML(data, config, sectionKpiEditorOpen) {
   });
   var modelList = Object.values(modelRows).sort((a, b) => b.cost - a.cost);
   var modelTable = modelList.length
-    ? table(["Model", "Requests", "Cost", "Avg/Req"], modelList.map((m) => "<tr><td>" + esc(m.provider) + " / <b>" + esc(m.model) + "</b></td><td>" + num(m.requests) + "</td><td>" + money(m.cost) + "</td><td>" + money(m.requests ? m.cost / m.requests : 0) + "</td></tr>"))
+    ? table(["Model", "Requests", "Cost", "Avg/Req", "% Total"], modelList.map((m) => {
+        var pct = totalCost > 0 ? (100 * m.cost / totalCost).toFixed(1) : "0";
+        return "<tr><td>" + esc(m.provider) + " / <b>" + esc(m.model) + "</b></td><td>" + num(m.requests) + "</td><td>" + money(m.cost) + "</td><td>" + money(m.requests ? m.cost / m.requests : 0) + "</td><td>" + pct + "%</td></tr>";
+      }))
     : empty("No cost data in selected range");
 
-  return kpiHTML + chartHTML + "<section><h3>Cost by Model</h3>" + modelTable + "</section>";
+  // Budget bar
+  var budgetBar = budget > 0 ? "<div class=\"budget-meter\"><span style=\"width:" + Math.min(100, budgetUsed) + "%\"></span><small>" + money(lastMonthCost) + " used / " + money(budget) + " budget</small></div>" : "";
+
+  // Split layout: left = budget details, right = cost by model
+  var splitHTML = "<div class=\"split\"><section><h3>预算与成本汇总</h3>" + budgetBar + "<div class=\"table-wrap\"><table><tbody>" +
+    "<tr><td>Total Cost</td><td><b>" + money(totalCost) + "</b></td></tr>" +
+    "<tr><td>Today</td><td>" + money(lastDayCost) + "</td></tr>" +
+    "<tr><td>This Week</td><td>" + money(lastWeekCost) + "</td></tr>" +
+    "<tr><td>This Month</td><td>" + money(lastMonthCost) + "</td></tr>" +
+    "<tr><td>Avg Cost/Req</td><td>" + money(avgCost) + "</td></tr>" +
+    (budget > 0 ? "<tr><td>Budget</td><td>" + money(budget) + "</td></tr><tr><td>Budget Left</td><td>" + money(Math.max(0, budget - lastMonthCost)) + "</td></tr>" : "") +
+    "</tbody></table></div></section><section><h3>Cost by Model</h3>" + modelTable + "</section></div>";
+
+  return kpiHTML + chartHTML + splitHTML;
 }
 
 function activity(data) {
