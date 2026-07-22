@@ -48,6 +48,8 @@ export const SECTION_KPIS = {
     ["avgLatency", "平均延迟", true],
     ["toolCalls", "Tool 调用", true],
     ["cacheRate", "Cache 命中率", true],
+    ["daemonHealth", "Daemon 健康", true],
+    ["dataFlow", "数据流", true],
     ["inputTokens", "Input Token", false],
     ["outputTokens", "Output Token", false],
     ["errorRate", "错误率", false],

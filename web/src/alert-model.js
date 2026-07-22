@@ -76,6 +76,62 @@ export function evaluateAlerts(data, config, now = Date.now()) {
     monthlyCost >= budget ? "月度预算已超限" : "月度预算接近上限",
     `$${monthlyCost.toFixed(2)} / $${budget.toFixed(2)}`, "cost", "monthly",
   ));
+
+  // --- Daemon health & data-flow alerts ---
+  const status = data.status || {};
+  const daemon = status.daemon || {};
+
+  // Daemon not ready
+  if (daemon.ready === false) alerts.push(alert(
+    "daemon:not-ready", "critical",
+    "Observatory daemon 未就绪",
+    `daemon version ${daemon.version || "unknown"} — 数据采集可能中断`, "system", "observatoryd",
+  ));
+
+  // Last event stale (>10min no events at all)
+  const lastEvent = status.lastEventReceivedAt ? Date.parse(status.lastEventReceivedAt) : 0;
+  if (lastEvent && Number.isFinite(lastEvent)) {
+    const eventAgeMin = (now - lastEvent) / 60000;
+    if (eventAgeMin >= 10) alerts.push(alert(
+      "daemon:event-stale", eventAgeMin >= 30 ? "critical" : "warning",
+      "Observatory 事件流中断",
+      `最后一次事件在 ${Math.round(eventAgeMin)} 分钟前 — daemon 可能卡死或 socket 断开`, "system", "observatoryd",
+      new Date(lastEvent).toISOString(),
+    ));
+  }
+
+  // Data flow stall: resource samples flowing but no agent activity
+  const points = data.timeseries?.points || [];
+  if (points.length >= 5) {
+    const recent = points.slice(-5);
+    const hasResource = recent.some((p) => Number(p.averageCpuPercent || 0) > 0);
+    const hasActivity = recent.some((p) => Number(p.runs || 0) > 0 || Number(p.llmRequests || 0) > 0);
+    if (hasResource && !hasActivity) {
+      const allZero = recent.every((p) => Number(p.runs || 0) === 0 && Number(p.llmRequests || 0) === 0 && Number(p.toolCalls || 0) === 0);
+      if (allZero) alerts.push(alert(
+        "daemon:data-flow-stall", "critical",
+        "Agent 活动数据缺失",
+        "CPU/内存采样正常但 runs/LLM/tool 全为零 — Gateway 监控插件可能断连", "system", "observatoryd",
+      ));
+    }
+  }
+
+  // Instance offline
+  for (const inst of status.instances || []) {
+    if (inst.status === "down") alerts.push(alert(
+      `instance:down:${inst.instanceId}`, "critical",
+      `实例 ${inst.instanceId?.slice(0, 16)} 离线`, "OpenClaw 实例不可达", "system", inst.instanceId,
+    ));
+    const lastSeen = inst.lastSeenAt ? Date.parse(inst.lastSeenAt) : 0;
+    if (lastSeen && Number.isFinite(lastSeen)) {
+      const ageMin = (now - lastSeen) / 60000;
+      if (ageMin >= 5 && inst.status !== "down") alerts.push(alert(
+        `instance:stale:${inst.instanceId}`, ageMin >= 15 ? "critical" : "warning",
+        `实例 ${inst.instanceId?.slice(0, 16)} 心跳延迟`, `最后心跳 ${Math.round(ageMin)} 分钟前`, "system", inst.instanceId,
+      ));
+    }
+  }
+
   return alerts.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "critical" ? -1 : 1));
 }
 

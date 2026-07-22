@@ -48,6 +48,19 @@ function overviewSummary(data, config, sectionKpiEditor) {
   const errorRateVal = runs ? (100 * (sum(agents, "runErrors")) / runs).toFixed(1) : "0.0";
   const point = [...(data.timeseries?.points || [])].reverse().find((row) => Number(row.diskTotalBytes || 0) > 0) || {};
   const memPoint = [...(data.timeseries?.points || [])].reverse().find((row) => Number(row.maxMemoryBytes || 0) > 0) || {};
+
+  // Daemon health & data flow indicators
+  const status = data.status || {};
+  const daemon = status.daemon || {};
+  const lastEventMs = status.lastEventReceivedAt ? Date.parse(status.lastEventReceivedAt) : 0;
+  const eventAgeMin = lastEventMs ? Math.round((Date.now() - lastEventMs) / 60000) : null;
+  const daemonHealthy = daemon.ready !== false && (eventAgeMin === null || eventAgeMin < 10);
+  const recentPts = (data.timeseries?.points || []).slice(-5);
+  const hasResource = recentPts.some((p) => Number(p.averageCpuPercent || 0) > 0);
+  const hasActivity = recentPts.some((p) => Number(p.runs || 0) > 0 || Number(p.llmRequests || 0) > 0);
+  const flowOk = hasActivity || !hasResource; // ok if either has activity or no resource samples yet
+  const inst = (status.instances || [])[0] || {};
+  const instOk = inst.status === "up";
   const allMetrics = {
     onlineAgents: { label: "在线 Agent", value: num(onlineAgents), note: `${agents.length} 个有观测数据` },
     activeSessions: { label: "活跃 Session", value: num(sessions.filter((row) => row.status === "active").length), note: `${sessions.length} 个会话` },
@@ -60,6 +73,8 @@ function overviewSummary(data, config, sectionKpiEditor) {
     avgLatency: { label: "平均延迟", value: ms(avgLatency), note: "端到端 LLM" },
     toolCalls: { label: "Tool 调用", value: compact(toolCallsTotal), note: `${sum(agents, "toolErrors")} errors` },
     cacheRate: { label: "Cache 命中率", value: cacheRate + "%", note: `${compact(cacheRead)} / ${compact(totalTok)}` },
+    daemonHealth: { label: "Daemon 健康", value: daemonHealthy ? "✓ Healthy" : "⚠ 异常", note: daemon.version ? `v${daemon.version}` : "unknown" + (eventAgeMin != null ? ` · ${eventAgeMin}min ago` : ""), level: daemonHealthy ? "" : "critical" },
+    dataFlow: { label: "数据流", value: flowOk ? "✓ 正常" : "⚠ 中断", note: instOk ? `instance up` : "instance down", level: flowOk ? "" : "critical" },
     inputTokens: { label: "Input Token", value: compact(inputTok), note: "prompt tokens" },
     outputTokens: { label: "Output Token", value: compact(outputTok), note: "completion tokens" },
     errorRate: { label: "错误率", value: errorRateVal + "%", note: `${sum(agents, "runErrors")} of ${runs} runs` },
