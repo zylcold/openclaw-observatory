@@ -716,6 +716,8 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		}
 		emit(name, typ, "Latest sampled process value.", rows)
 	}
+	emit("openclaw_llm_tokens_by_agent_model", "counter", "Total tokens by agent and model.", snap.AgentModelTokens)
+	emit("openclaw_llm_cost_by_agent_model", "counter", "Total cost in USD by agent and model.", snap.AgentModelCost)
 }
 func labels(m map[string]string) string {
 	if len(m) == 0 {

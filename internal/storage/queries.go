@@ -398,6 +398,7 @@ type MetricRow struct {
 type MetricsSnapshot struct {
 	GatewayUp, Uptime, Restarts, SessionsActive, RunsActive                                                          []MetricRow
 	Runs, LLM, LLMTokensInput, LLMTokensOutput, LLMCost, Tools, ToolErrors, Resources, Received, Dropped, QueueDepth []MetricRow
+	AgentModelTokens, AgentModelCost []MetricRow
 }
 
 func (r *Repository) Metrics(ctx context.Context, nowUnix float64) (MetricsSnapshot, error) {
@@ -422,6 +423,8 @@ func (r *Repository) Metrics(ctx context.Context, nowUnix float64) (MetricsSnaps
 		{&s.Received, `SELECT instance_id,event_type,COUNT(*) FROM events GROUP BY instance_id,event_type`, []string{"instance", "event_type"}},
 		{&s.Dropped, `SELECT instance_id,COALESCE(json_extract(payload_json,'$.reason'),'unknown'),SUM(COALESCE(json_extract(payload_json,'$.count'),1)) FROM events WHERE event_type='monitor.events_dropped' GROUP BY instance_id,2`, []string{"instance", "reason"}},
 		{&s.QueueDepth, `SELECT instance_id,COALESCE(CAST(json_extract(payload_json,'$.queueDepth') AS REAL),0) FROM events WHERE rowid IN (SELECT MAX(rowid) FROM events WHERE event_type='gateway.heartbeat' GROUP BY instance_id)`, []string{"instance"}},
+		{&s.AgentModelTokens, `SELECT COALESCE(ar.agent_id,'unknown') AS agent_id,COALESCE(l.model,'unknown') AS model,SUM(l.input_tokens+l.output_tokens+l.cache_read_tokens+l.cache_write_tokens) FROM llm_calls l LEFT JOIN agent_runs ar ON ar.instance_id=l.instance_id AND ar.run_id=l.run_id GROUP BY ar.agent_id,l.model`, []string{"agentId", "model"}},
+		{&s.AgentModelCost, `SELECT COALESCE(ar.agent_id,'unknown') AS agent_id,COALESCE(l.model,'unknown') AS model,SUM(l.cost_usd) FROM llm_calls l LEFT JOIN agent_runs ar ON ar.instance_id=l.instance_id AND ar.run_id=l.run_id GROUP BY ar.agent_id,l.model`, []string{"agentId", "model"}},
 	}
 	for _, item := range queries {
 		args := []any{}
