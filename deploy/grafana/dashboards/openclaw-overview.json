@@ -12,10 +12,35 @@
     { "id": 4, "type": "stat", "title": "Active Agent Runs", "gridPos": {"h":4,"w":4,"x":12,"y":0}, "targets": [{"refId":"A","expr":"sum(openclaw_agent_runs_active)"}] },
     { "id": 5, "type": "stat", "title": "Tokens Today", "gridPos": {"h":4,"w":4,"x":16,"y":0}, "targets": [{"refId":"A","expr":"sum(increase(openclaw_llm_tokens_total[24h]))"}] },
     { "id": 6, "type": "stat", "title": "Cost Today", "gridPos": {"h":4,"w":4,"x":20,"y":0}, "targets": [{"refId":"A","expr":"sum(increase(openclaw_llm_cost_usd_total[24h]))"}], "fieldConfig":{"defaults":{"unit":"currencyUSD"},"overrides":[]} },
-    { "id": 7, "type": "timeseries", "title": "RSS / Virtual Memory", "gridPos": {"h":8,"w":12,"x":0,"y":4}, "targets": [{"refId":"A","expr":"openclaw_process_resident_memory_bytes","legendFormat":"RSS {{instance}}"},{"refId":"B","expr":"openclaw_process_virtual_memory_bytes","legendFormat":"VM {{instance}}"}], "fieldConfig":{"defaults":{"unit":"bytes"},"overrides":[]} },
-    { "id": 8, "type": "timeseries", "title": "LLM Requests", "gridPos": {"h":8,"w":12,"x":12,"y":4}, "targets": [{"refId":"A","expr":"sum by (provider,model,status) (rate(openclaw_llm_requests_total[5m]))","legendFormat":"{{provider}} / {{model}} / {{status}}"}] },
-    { "id": 9, "type": "timeseries", "title": "Tool Calls and Errors", "gridPos": {"h":8,"w":12,"x":0,"y":12}, "targets": [{"refId":"A","expr":"sum by (tool,status) (rate(openclaw_tool_calls_total[5m]))","legendFormat":"{{tool}} {{status}}"},{"refId":"B","expr":"sum by (tool) (rate(openclaw_tool_errors_total[5m]))","legendFormat":"{{tool}} errors"}] },
-    { "id": 10, "type": "timeseries", "title": "Restarts and Dropped Events", "gridPos": {"h":8,"w":12,"x":12,"y":12}, "targets": [{"refId":"A","expr":"sum(increase(openclaw_gateway_restarts_total[1h]))","legendFormat":"restarts"},{"refId":"B","expr":"sum(increase(openclaw_monitor_events_dropped_total[1h]))","legendFormat":"dropped"}] }
+
+    { "id": 100, "type": "row", "title": "Infrastructure", "gridPos": {"h":1,"w":24,"x":0,"y":4} },
+
+    { "id": 7, "type": "timeseries", "title": "CPU Usage", "gridPos": {"h":6,"w":8,"x":0,"y":5}, "targets": [{"refId":"A","expr":"rate(openclaw_process_cpu_seconds_total[5m])","legendFormat":"{{instance}}"}], "fieldConfig":{"defaults":{"unit":"short","min":0},"overrides":[]} },
+    { "id": 8, "type": "timeseries", "title": "RSS / Virtual Memory", "gridPos": {"h":6,"w":8,"x":8,"y":5}, "targets": [{"refId":"A","expr":"openclaw_process_resident_memory_bytes","legendFormat":"RSS {{instance}}"},{"refId":"B","expr":"openclaw_process_virtual_memory_bytes","legendFormat":"VM {{instance}}"}], "fieldConfig":{"defaults":{"unit":"bytes"},"overrides":[]} },
+    { "id": 9, "type": "timeseries", "title": "Threads & File Descriptors", "gridPos": {"h":6,"w":8,"x":16,"y":5}, "targets": [{"refId":"A","expr":"openclaw_process_threads","legendFormat":"Threads {{instance}}"},{"refId":"B","expr":"openclaw_process_open_fds","legendFormat":"FDs {{instance}}"}], "fieldConfig":{"defaults":{"unit":"short","min":0},"overrides":[]} },
+
+    { "id": 10, "type": "timeseries", "title": "Disk I/O", "gridPos": {"h":6,"w":8,"x":0,"y":11}, "targets": [{"refId":"A","expr":"rate(openclaw_process_read_bytes_total[5m])","legendFormat":"Read {{instance}}"},{"refId":"B","expr":"rate(openclaw_process_write_bytes_total[5m])","legendFormat":"Write {{instance}}"}], "fieldConfig":{"defaults":{"unit":"Bps"},"overrides":[]} },
+    { "id": 11, "type": "timeseries", "title": "Disk Space", "gridPos": {"h":6,"w":8,"x":8,"y":11}, "targets": [{"refId":"A","expr":"openclaw_host_disk_available_bytes","legendFormat":"Available {{instance}}"},{"refId":"B","expr":"openclaw_host_disk_total_bytes","legendFormat":"Total {{instance}}"}], "fieldConfig":{"defaults":{"unit":"bytes"},"overrides":[]} },
+    { "id": 12, "type": "timeseries", "title": "LLM Requests", "gridPos": {"h":6,"w":8,"x":16,"y":11}, "targets": [{"refId":"A","expr":"sum by (provider,model,status) (rate(openclaw_llm_requests_total[5m]))","legendFormat":"{{provider}} / {{model}} / {{status}}"}] },
+
+    { "id": 200, "type": "row", "title": "Gateway & Events", "gridPos": {"h":1,"w":24,"x":0,"y":17} },
+
+    { "id": 13, "type": "timeseries", "title": "Tool Calls and Errors", "gridPos": {"h":6,"w":12,"x":0,"y":18}, "targets": [{"refId":"A","expr":"sum by (tool,status) (rate(openclaw_tool_calls_total[5m]))","legendFormat":"{{tool}} {{status}}"},{"refId":"B","expr":"sum by (tool) (rate(openclaw_tool_errors_total[5m]))","legendFormat":"{{tool}} errors"}] },
+    { "id": 14, "type": "timeseries", "title": "Restarts and Dropped Events", "gridPos": {"h":6,"w":12,"x":12,"y":18}, "targets": [{"refId":"A","expr":"sum(increase(openclaw_gateway_restarts_total[1h]))","legendFormat":"restarts"},{"refId":"B","expr":"sum(increase(openclaw_monitor_events_dropped_total[1h]))","legendFormat":"dropped"}] },
+    { "id": 15, "type": "timeseries", "title": "Event Queue Depth", "gridPos": {"h":6,"w":12,"x":0,"y":24}, "targets": [{"refId":"A","expr":"openclaw_monitor_event_queue_depth","legendFormat":"{{instance}}"}], "fieldConfig":{"defaults":{"unit":"short","min":0},"overrides":[]} },
+    { "id": 16, "type": "timeseries", "title": "Insert/Query Duration", "gridPos": {"h":6,"w":12,"x":12,"y":24}, "targets": [{"refId":"A","expr":"rate(openclaw_monitor_insert_duration_seconds_sum[5m]) / rate(openclaw_monitor_insert_duration_seconds_count[5m])","legendFormat":"Insert avg"},{"refId":"B","expr":"rate(openclaw_monitor_query_duration_seconds_sum[5m]) / rate(openclaw_monitor_query_duration_seconds_count[5m])","legendFormat":"Query avg"}], "fieldConfig":{"defaults":{"unit":"s"},"overrides":[]} },
+
+    { "id": 300, "type": "row", "title": "Agent Activity", "gridPos": {"h":1,"w":24,"x":0,"y":30} },
+
+    { "id": 18, "type": "bargauge", "title": "Active Sessions by Agent", "gridPos": {"h":8,"w":8,"x":0,"y":31}, "targets": [{"refId":"A","expr":"sum by (agentId) (openclaw_sessions_active)","legendFormat":"{{agentId}}"}], "fieldConfig":{"defaults":{"min":0},"overrides":[]}, "options":{"orientation":"horizontal","displayMode":"gradient","showUnfilled":true} },
+    { "id": 19, "type": "bargauge", "title": "Active Runs by Agent", "gridPos": {"h":8,"w":8,"x":8,"y":31}, "targets": [{"refId":"A","expr":"sum by (agentId) (openclaw_agent_runs_active)","legendFormat":"{{agentId}}"}], "fieldConfig":{"defaults":{"min":0},"overrides":[]}, "options":{"orientation":"horizontal","displayMode":"gradient","showUnfilled":true} },
+    { "id": 20, "type": "timeseries", "title": "Tokens by Agent", "gridPos": {"h":8,"w":8,"x":16,"y":31}, "targets": [{"refId":"A","expr":"sum by (agentId) (rate(openclaw_llm_tokens_total[5m]))","legendFormat":"{{agentId}}"}], "fieldConfig":{"defaults":{"unit":"short"},"overrides":[]} },
+
+    { "id": 21, "type": "timeseries", "title": "Runs by Agent (Status)", "gridPos": {"h":8,"w":12,"x":0,"y":39}, "targets": [{"refId":"A","expr":"sum by (agentId,status) (rate(openclaw_agent_runs_total[5m]))","legendFormat":"{{agentId}} {{status}}"}] },
+    { "id": 22, "type": "timeseries", "title": "Cost by Agent", "gridPos": {"h":8,"w":12,"x":12,"y":39}, "targets": [{"refId":"A","expr":"sum by (agentId) (rate(openclaw_llm_cost_usd_total[5m]))","legendFormat":"{{agentId}}"}], "fieldConfig":{"defaults":{"unit":"currencyUSD"},"overrides":[]} },
+
+    { "id": 23, "type": "timeseries", "title": "Tokens by Direction", "gridPos": {"h":6,"w":12,"x":0,"y":47}, "targets": [{"refId":"A","expr":"sum by (direction) (rate(openclaw_llm_tokens_total[5m]))","legendFormat":"{{direction}}"}], "fieldConfig":{"defaults":{"unit":"short"},"overrides":[]} },
+    { "id": 24, "type": "timeseries", "title": "LLM Latency (P95)", "gridPos": {"h":6,"w":12,"x":12,"y":47}, "targets": [{"refId":"A","expr":"histogram_quantile(0.95, sum(rate(openclaw_llm_requests_total[5m])) by (le, provider, model))","legendFormat":"{{provider}} {{model}}"}], "fieldConfig":{"defaults":{"unit":"s"},"overrides":[]} }
   ],
   "refresh": "15s",
   "schemaVersion": 41,
@@ -25,5 +50,5 @@
   "timezone": "browser",
   "title": "OpenClaw Observatory Overview",
   "uid": "openclaw-observatory",
-  "version": 1
+  "version": 2
 }
