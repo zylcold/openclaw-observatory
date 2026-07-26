@@ -388,13 +388,46 @@ func (r *Repository) TimeSeries(ctx context.Context, opts ListOptions, bucketSec
 		return nil, err
 	}
 
-	agentQuery := `WITH ` + runAgentsCTE + `
-  SELECT strftime('%Y-%m-%dT%H:%M:%SZ',CAST(unixepoch(started_at)/@bucket AS INTEGER)*@bucket,'unixepoch') AS time,
-    agent_id AS agentId,COUNT(*) AS runs,SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS errors,SUM(COALESCE(duration_ms,0)) AS durationMs
-	  FROM run_agents WHERE (@instance='' OR instance_id=@instance)
-	    AND (@from='' OR started_at>=@from) AND (@to='' OR started_at<=@to) AND (@agent='' OR agent_id=@agent)
-	    AND (@status='' OR status=@status)
-  GROUP BY 1,agent_id ORDER BY 1,runs DESC`
+	agentQuery := `WITH ` + runAgentsCTE + `,
+  agent_buckets AS (
+    SELECT CAST(unixepoch(started_at)/@bucket AS INTEGER)*@bucket AS bucket,
+      agent_id,
+      COUNT(*) AS runs,
+      SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS errors,
+      SUM(COALESCE(duration_ms,0)) AS durationMs
+    FROM run_agents WHERE (@instance='' OR instance_id=@instance)
+      AND (@from='' OR started_at>=@from) AND (@to='' OR started_at<=@to) AND (@agent='' OR agent_id=@agent)
+      AND (@status='' OR status=@status)
+    GROUP BY 1, agent_id
+  ),
+  llm_buckets AS (
+    SELECT CAST(unixepoch(l.started_at)/@bucket AS INTEGER)*@bucket AS bucket,
+      COALESCE(r.agent_id,'unknown') AS agent_id,
+      SUM(l.input_tokens) AS input_tokens,
+      SUM(l.output_tokens) AS output_tokens,
+      SUM(l.cache_read_tokens) AS cache_read_tokens,
+      SUM(l.cache_write_tokens) AS cache_write_tokens,
+      SUM(l.cost_usd) AS cost_usd
+    FROM llm_calls l LEFT JOIN run_agents r ON r.instance_id=l.instance_id AND r.run_id=l.run_id
+    WHERE (@instance='' OR l.instance_id=@instance)
+      AND (@from='' OR l.started_at>=@from) AND (@to='' OR l.started_at<=@to)
+      AND (@agent='' OR r.agent_id=@agent)
+      AND (@status='' OR l.status=@status)
+    GROUP BY 1, COALESCE(r.agent_id,'unknown')
+  ),
+  combined AS (
+    SELECT bucket, agent_id, runs, errors, durationMs, 0 AS input_tokens, 0 AS output_tokens, 0 AS cache_read_tokens, 0 AS cache_write_tokens, 0 AS cost_usd FROM agent_buckets
+    UNION ALL
+    SELECT bucket, agent_id, 0, 0, 0, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd FROM llm_buckets
+  )
+  SELECT strftime('%Y-%m-%dT%H:%M:%SZ', bucket, 'unixepoch') AS time,
+    agent_id AS agentId,
+    SUM(runs) AS runs, SUM(errors) AS errors, SUM(durationMs) AS durationMs,
+    SUM(input_tokens) AS inputTokens, SUM(output_tokens) AS outputTokens,
+    SUM(cache_read_tokens) AS cacheReadTokens, SUM(cache_write_tokens) AS cacheWriteTokens,
+    SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) AS totalTokens,
+    SUM(cost_usd) AS costUsd
+  FROM combined GROUP BY bucket, agent_id ORDER BY 1, runs DESC`
 	agents, err := queryMaps(ctx, r.db, agentQuery, args...)
 	if err != nil {
 		return nil, err

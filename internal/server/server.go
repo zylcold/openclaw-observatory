@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/zylcold/openclaw-observatory/internal/event"
+	"github.com/zylcold/openclaw-observatory/internal/pricing"
 	"github.com/zylcold/openclaw-observatory/internal/storage"
 )
 
@@ -37,14 +39,54 @@ type Server struct {
 	ready          atomic.Bool
 	backpressureMu sync.Mutex
 	backpressured  map[string]bool
+	prices         *pricing.Catalog
+	gatewayProbeMu sync.RWMutex
+	gatewayProbe   GatewayProbeSnapshot
+}
+
+type GatewayProbeSnapshot struct {
+	Responsive          bool       `json:"responsive"`
+	DurationSeconds     float64    `json:"durationSeconds"`
+	ConsecutiveFailures uint64     `json:"consecutiveFailures"`
+	LastProbedAt        *time.Time `json:"lastProbedAt,omitempty"`
+	LastSuccessAt       *time.Time `json:"lastSuccessAt,omitempty"`
+	StatusCode          int        `json:"statusCode,omitempty"`
 }
 
 func New(repo *storage.Repository, logger *slog.Logger) *Server {
-	s := &Server{repo: repo, hub: NewHub(), log: logger, backpressured: make(map[string]bool)}
+	s := &Server{repo: repo, hub: NewHub(), log: logger, backpressured: make(map[string]bool), prices: pricing.NewCatalog()}
 	s.ready.Store(true)
 	return s
 }
 func (s *Server) Hub() *Hub { return s.hub }
+func (s *Server) SetPricingCatalog(catalog *pricing.Catalog) {
+	if catalog != nil {
+		s.prices = catalog
+	}
+}
+
+func (s *Server) RecordGatewayProbe(duration time.Duration, statusCode int, err error) {
+	now := time.Now().UTC()
+	responsive := err == nil && statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices
+	s.gatewayProbeMu.Lock()
+	defer s.gatewayProbeMu.Unlock()
+	s.gatewayProbe.Responsive = responsive
+	s.gatewayProbe.DurationSeconds = duration.Seconds()
+	s.gatewayProbe.LastProbedAt = &now
+	s.gatewayProbe.StatusCode = statusCode
+	if responsive {
+		s.gatewayProbe.ConsecutiveFailures = 0
+		s.gatewayProbe.LastSuccessAt = &now
+	} else {
+		s.gatewayProbe.ConsecutiveFailures++
+	}
+}
+
+func (s *Server) GatewayProbe() GatewayProbeSnapshot {
+	s.gatewayProbeMu.RLock()
+	defer s.gatewayProbeMu.RUnlock()
+	return s.gatewayProbe
+}
 
 func (s *Server) IngestHandler() http.Handler {
 	mux := http.NewServeMux()
@@ -226,6 +268,7 @@ func (s *Server) statusData(ctx context.Context) (map[string]any, error) {
 	v["capabilities"] = Capabilities
 	v["buildId"] = BuildID
 	v["daemon"] = map[string]any{"version": Version, "ready": s.ready.Load(), "buildId": BuildID}
+	v["gatewayProbe"] = s.GatewayProbe()
 	v["time"] = time.Now().UTC()
 	return v, nil
 }
@@ -332,8 +375,8 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	data(w, map[string]any{
 		"status": status, "timeseries": timeseries, "models": models, "tools": tools, "agents": agents,
 		"agentModels": agentModels,
-		"lifetime": lifetime,
-		"sessions": sessions, "llmCalls": llmCalls, "errors": errors, "anomalies": anomalies, "subagents": subagents, "mcpCalls": mcpCalls,
+		"lifetime":    lifetime,
+		"sessions":    sessions, "llmCalls": llmCalls, "errors": errors, "anomalies": anomalies, "subagents": subagents, "mcpCalls": mcpCalls,
 		"costTrends": costTrends, "costSummary": costSummary, "costTrends30d": costTrends30d,
 	})
 }
@@ -660,11 +703,22 @@ func securityHeaders(next http.Handler) http.Handler {
 }
 
 func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.repo.EstimateMissingLLMCosts(r.Context(), s.prices.Estimate); err != nil {
+		apiError(w, 500, "metrics_error", "failed to persist missing cost estimates")
+		return
+	}
 	snap, err := s.repo.Metrics(r.Context(), float64(time.Now().Unix()))
 	if err != nil {
 		apiError(w, 500, "metrics_error", "failed to aggregate metrics")
 		return
 	}
+	costByModel, costByAgentModel, unpricedTokens, err := s.effectiveCostMetrics(r.Context())
+	if err != nil {
+		apiError(w, 500, "metrics_error", "failed to estimate cost metrics")
+		return
+	}
+	snap.LLMCost = costByModel
+	snap.AgentModelCost = costByAgentModel
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	emit := func(name, typ, help string, rows []storage.MetricRow) {
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, typ)
@@ -673,6 +727,16 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	emit("openclaw_gateway_up", "gauge", "Whether the observed Gateway is up.", snap.GatewayUp)
+	emit("openclaw_gateway_heartbeat_age_seconds", "gauge", "Age of the most recently received Gateway heartbeat.", snap.GatewayHeartbeatAge)
+	probe := s.GatewayProbe()
+	emit("openclaw_gateway_responsive", "gauge", "Whether the active Gateway HTTP health probe succeeded.", probeRows(snap.GatewayUp, boolNumber(probe.Responsive)))
+	emit("openclaw_gateway_response_duration_seconds", "gauge", "Duration of the latest active Gateway HTTP health probe.", probeRows(snap.GatewayUp, probe.DurationSeconds))
+	emit("openclaw_gateway_probe_consecutive_failures", "gauge", "Consecutive failed active Gateway health probes.", probeRows(snap.GatewayUp, float64(probe.ConsecutiveFailures)))
+	lastSuccess := float64(0)
+	if probe.LastSuccessAt != nil {
+		lastSuccess = float64(probe.LastSuccessAt.Unix())
+	}
+	emit("openclaw_gateway_probe_last_success_unixtime", "gauge", "Unix timestamp of the latest successful active Gateway health probe.", probeRows(snap.GatewayUp, lastSuccess))
 	emit("openclaw_gateway_uptime_seconds", "gauge", "Gateway uptime in seconds.", snap.Uptime)
 	emit("openclaw_gateway_restarts_total", "counter", "Observed Gateway restarts.", snap.Restarts)
 	emit("openclaw_sessions_active", "gauge", "Active sessions.", snap.SessionsActive)
@@ -685,8 +749,28 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	for i := range snap.LLMTokensOutput {
 		snap.LLMTokensOutput[i].Labels["direction"] = "output"
 	}
-	emit("openclaw_llm_tokens_total", "counter", "LLM tokens by direction.", append(snap.LLMTokensInput, snap.LLMTokensOutput...))
-	emit("openclaw_llm_cost_usd_total", "counter", "Reported LLM cost in USD.", snap.LLMCost)
+	for i := range snap.LLMTokensCacheRead {
+		snap.LLMTokensCacheRead[i].Labels["direction"] = "cache_read"
+	}
+	for i := range snap.LLMTokensCacheWrite {
+		snap.LLMTokensCacheWrite[i].Labels["direction"] = "cache_write"
+	}
+	tokenRows := make([]storage.MetricRow, 0, len(snap.LLMTokensInput)+len(snap.LLMTokensOutput)+len(snap.LLMTokensCacheRead)+len(snap.LLMTokensCacheWrite))
+	tokenRows = append(tokenRows, snap.LLMTokensInput...)
+	tokenRows = append(tokenRows, snap.LLMTokensOutput...)
+	tokenRows = append(tokenRows, snap.LLMTokensCacheRead...)
+	tokenRows = append(tokenRows, snap.LLMTokensCacheWrite...)
+	emit("openclaw_llm_tokens_total", "counter", "LLM tokens by direction, including cache reads and writes.", tokenRows)
+	emit("openclaw_llm_cost_usd_total", "counter", "LLM cost in USD; reported cost is authoritative and missing cost is estimated from the cached OpenRouter catalog.", snap.LLMCost)
+	emit("openclaw_llm_cost_usd_24h", "gauge", "Rolling 24-hour LLM cost in USD calculated from call timestamps.", snap.LLMCost24h)
+	emit("openclaw_llm_unpriced_tokens_total", "counter", "Tokens that could not be assigned a reported or estimated cost.", unpricedTokens)
+	models, pricingUpdatedAt := s.prices.Status()
+	emit("openclaw_pricing_catalog_models", "gauge", "Number of model price keys available to Observatory.", []storage.MetricRow{{Value: float64(models)}})
+	updatedAtUnix := float64(0)
+	if !pricingUpdatedAt.IsZero() {
+		updatedAtUnix = float64(pricingUpdatedAt.Unix())
+	}
+	emit("openclaw_pricing_catalog_last_success_unixtime", "gauge", "Unix timestamp of the last successful OpenRouter pricing refresh.", []storage.MetricRow{{Value: updatedAtUnix}})
 	emit("openclaw_tool_calls_total", "counter", "Tool calls.", snap.Tools)
 	emit("openclaw_tool_errors_total", "counter", "Tool errors.", snap.ToolErrors)
 	emit("openclaw_monitor_events_received_total", "counter", "Accepted unique events.", snap.Received)
@@ -716,8 +800,107 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		}
 		emit(name, typ, "Latest sampled process value.", rows)
 	}
-	emit("openclaw_llm_tokens_by_agent_model", "counter", "Total tokens by agent and model.", snap.AgentModelTokens)
-	emit("openclaw_llm_cost_by_agent_model", "counter", "Total cost in USD by agent and model.", snap.AgentModelCost)
+	emit("openclaw_llm_tokens_by_agent_model_total", "counter", "Total tokens by agent and model.", snap.AgentModelTokens)
+	emit("openclaw_llm_cost_usd_by_agent_model_total", "counter", "Reported or OpenRouter-estimated total cost in USD by agent and model.", snap.AgentModelCost)
+	emit("openclaw_llm_cost_usd_by_agent_model_24h", "gauge", "Rolling 24-hour reported or estimated cost in USD by agent and model.", snap.AgentModelCost24h)
+	// Keep the first published names for dashboard compatibility. New panels use
+	// the canonical counter names above so Prometheus reset handling is explicit.
+	emit("openclaw_llm_tokens_by_agent_model", "counter", "Deprecated alias for total tokens by agent and model.", aggregateWithoutLabel(snap.AgentModelTokens, "instance"))
+	emit("openclaw_llm_cost_by_agent_model", "counter", "Deprecated alias for total cost in USD by agent and model.", aggregateWithoutLabel(snap.AgentModelCost, "instance"))
+}
+
+func probeRows(instances []storage.MetricRow, value float64) []storage.MetricRow {
+	rows := make([]storage.MetricRow, 0, len(instances))
+	for _, instance := range instances {
+		rows = append(rows, storage.MetricRow{
+			Labels: map[string]string{"instance": instance.Labels["instance"]},
+			Value:  value,
+		})
+	}
+	return rows
+}
+
+func boolNumber(value bool) float64 {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func (s *Server) effectiveCostMetrics(ctx context.Context) ([]storage.MetricRow, []storage.MetricRow, []storage.MetricRow, error) {
+	usage, err := s.repo.LLMUsageForCostMetrics(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	byModel := make(map[string]storage.MetricRow)
+	byAgentModel := make(map[string]storage.MetricRow)
+	unpriced := make(map[string]storage.MetricRow)
+	for _, row := range usage {
+		estimated, priced := s.prices.Estimate(row.Provider, row.Model, row.MissingInput, row.MissingOutput, row.MissingCacheRead, row.MissingCacheWrite)
+		cost := row.ReportedCost
+		if priced {
+			cost += estimated
+		} else {
+			tokens := row.MissingInput + row.MissingOutput + row.MissingCacheRead + row.MissingCacheWrite
+			addMetric(unpriced, map[string]string{"instance": row.InstanceID, "provider": row.Provider, "model": row.Model}, tokens)
+		}
+		addMetric(byModel, map[string]string{"instance": row.InstanceID, "provider": row.Provider, "model": row.Model}, cost)
+		addMetric(byAgentModel, map[string]string{"instance": row.InstanceID, "agentId": row.AgentID, "model": row.Model}, cost)
+	}
+	return metricMapRows(byModel), metricMapRows(byAgentModel), metricMapRows(unpriced), nil
+}
+
+func addMetric(rows map[string]storage.MetricRow, labels map[string]string, value float64) {
+	key := labelsKey(labels)
+	row := rows[key]
+	if row.Labels == nil {
+		row.Labels = labels
+	}
+	row.Value += value
+	rows[key] = row
+}
+
+func aggregateWithoutLabel(rows []storage.MetricRow, label string) []storage.MetricRow {
+	aggregated := make(map[string]storage.MetricRow)
+	for _, row := range rows {
+		labels := make(map[string]string, len(row.Labels))
+		for key, value := range row.Labels {
+			if key != label {
+				labels[key] = value
+			}
+		}
+		addMetric(aggregated, labels, row.Value)
+	}
+	return metricMapRows(aggregated)
+}
+
+func labelsKey(labels map[string]string) string {
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, key := range keys {
+		b.WriteString(key)
+		b.WriteByte('=')
+		b.WriteString(labels[key])
+		b.WriteByte(0)
+	}
+	return b.String()
+}
+
+func metricMapRows(rows map[string]storage.MetricRow) []storage.MetricRow {
+	keys := make([]string, 0, len(rows))
+	for key := range rows {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	result := make([]storage.MetricRow, 0, len(keys))
+	for _, key := range keys {
+		result = append(result, rows[key])
+	}
+	return result
 }
 func labels(m map[string]string) string {
 	if len(m) == 0 {

@@ -1,6 +1,6 @@
 package storage
 
-const CurrentSchemaVersion = 6
+const CurrentSchemaVersion = 7
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -284,4 +284,9 @@ CREATE INDEX IF NOT EXISTS idx_llm_trace ON llm_calls(instance_id,trace_id,span_
 CREATE INDEX IF NOT EXISTS idx_tools_trace ON tool_calls(instance_id,trace_id,span_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_trace ON mcp_calls(instance_id,trace_id,span_id);
 CREATE INDEX IF NOT EXISTS idx_retry_session_time ON retry_events(instance_id,session_id,occurred_at);
+`
+
+const schemaV7 = `
+ALTER TABLE llm_calls ADD COLUMN estimated_cost_usd REAL NOT NULL DEFAULT 0;
+ALTER TABLE llm_calls ADD COLUMN pricing_source TEXT;
 `

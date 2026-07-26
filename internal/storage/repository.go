@@ -96,7 +96,7 @@ func Open(path string) (*Repository, error) {
 	for _, migration := range []struct {
 		version int
 		sql     string
-	}{{2, schemaV2}, {3, schemaV3}, {4, schemaV4}, {5, schemaV5}, {6, schemaV6}} {
+	}{{2, schemaV2}, {3, schemaV3}, {4, schemaV4}, {5, schemaV5}, {6, schemaV6}, {7, schemaV7}} {
 		if err := applyMigration(db, migration.version, migration.sql); err != nil {
 			db.Close()
 			return nil, err
@@ -342,6 +342,7 @@ func reduce(ctx context.Context, tx *sql.Tx, e event.Event) error {
         duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category),
         input_tokens=MAX(input_tokens,excluded.input_tokens),output_tokens=MAX(output_tokens,excluded.output_tokens),cache_read_tokens=MAX(cache_read_tokens,excluded.cache_read_tokens),
         cache_write_tokens=MAX(cache_write_tokens,excluded.cache_write_tokens),cost_usd=MAX(cost_usd,excluded.cost_usd),
+        estimated_cost_usd=0,pricing_source=NULL,
         trace_id=COALESCE(NULLIF(excluded.trace_id,''),trace_id),span_id=COALESCE(NULLIF(excluded.span_id,''),span_id),parent_span_id=COALESCE(NULLIF(excluded.parent_span_id,''),parent_span_id),
         time_to_first_byte_ms=COALESCE(excluded.time_to_first_byte_ms,time_to_first_byte_ms),time_to_first_token_ms=COALESCE(excluded.time_to_first_token_ms,time_to_first_token_ms),
         generation_duration_ms=COALESCE(excluded.generation_duration_ms,generation_duration_ms),stop_reason=COALESCE(NULLIF(excluded.stop_reason,''),stop_reason),
@@ -405,7 +406,8 @@ func applyRunUsageUpdate(ctx context.Context, tx *sql.Tx, instanceID string, p m
 	model := event.String(p, "model")
 	_, err := tx.ExecContext(ctx, `UPDATE llm_calls SET
       input_tokens=MAX(input_tokens,?),output_tokens=MAX(output_tokens,?),cache_read_tokens=MAX(cache_read_tokens,?),
-      cache_write_tokens=MAX(cache_write_tokens,?),cost_usd=MAX(cost_usd,?)
+      cache_write_tokens=MAX(cache_write_tokens,?),cost_usd=MAX(cost_usd,?),
+      estimated_cost_usd=0,pricing_source=NULL
       WHERE rowid=(SELECT rowid FROM llm_calls WHERE instance_id=? AND run_id=?
         AND (?='' OR provider=?) AND (?='' OR model=?)
         ORDER BY COALESCE(ended_at,started_at) DESC LIMIT 1)`,

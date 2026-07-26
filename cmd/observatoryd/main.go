@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zylcold/openclaw-observatory/internal/pricing"
 	"github.com/zylcold/openclaw-observatory/internal/process"
 	"github.com/zylcold/openclaw-observatory/internal/server"
 	"github.com/zylcold/openclaw-observatory/internal/storage"
@@ -41,6 +43,11 @@ func run() error {
 	retentionEvents := flag.Int("retention-events-days", 7, "raw events retention period in days (0 = unlimited)")
 	retentionSamples := flag.Int("retention-samples-days", 30, "resource_samples retention period in days (0 = unlimited)")
 	retentionAll := flag.Int("retention-all-days", 0, "hard cap for projection tables in days (0 = disabled)")
+	pricingRefresh := flag.Duration("pricing-refresh-interval", 6*time.Hour, "OpenRouter model pricing refresh interval (0 = disabled)")
+	pricingURL := flag.String("pricing-url", pricing.DefaultModelsURL, "OpenRouter-compatible model pricing endpoint")
+	gatewayHealthURL := flag.String("gateway-health-url", "http://127.0.0.1:18789/health", "OpenClaw Gateway health endpoint for active response probes")
+	gatewayProbeInterval := flag.Duration("gateway-probe-interval", 5*time.Second, "active Gateway response probe interval (0 = disabled)")
+	gatewayProbeTimeout := flag.Duration("gateway-probe-timeout", 3*time.Second, "active Gateway response probe timeout")
 	flag.Parse()
 	if *socketPath == "" {
 		*socketPath = filepath.Join(*dataDir, "observatory.sock")
@@ -78,7 +85,13 @@ func run() error {
 		return err
 	}
 	defer tcp.Close()
+	priceCatalog := pricing.NewCatalog()
+	pricingCache := filepath.Join(*dataDir, "openrouter-pricing.json")
+	if err := priceCatalog.Load(pricingCache); err != nil && !os.IsNotExist(err) {
+		logger.Warn("load cached model pricing", "error", err)
+	}
 	srv := server.New(repo, logger)
+	srv.SetPricingCatalog(priceCatalog)
 	ingestHTTP := &http.Server{Handler: srv.IngestHandler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	publicHTTP := &http.Server{Handler: srv.PublicHandler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	retentionJob := storage.NewRetentionJob(repo, storage.RetentionConfig{
@@ -91,6 +104,12 @@ func run() error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	if *pricingRefresh > 0 {
+		go refreshPricing(ctx, priceCatalog, *pricingURL, os.Getenv("OPENROUTER_API_KEY"), pricingCache, *pricingRefresh, logger)
+	}
+	if *gatewayProbeInterval > 0 {
+		go probeGateway(ctx, srv, *gatewayHealthURL, *gatewayProbeInterval, *gatewayProbeTimeout, logger)
+	}
 	errCh := make(chan error, 2)
 	go serveWithRetry(ctx, ingestHTTP, uds, func() (net.Listener, error) { return listenUnix(*socketPath) }, "ingest", logger, errCh)
 	go serveWithRetry(ctx, publicHTTP, tcp, func() (net.Listener, error) { return net.Listen("tcp", *listenAddr) }, "public", logger, errCh)
@@ -113,6 +132,73 @@ func run() error {
 	_ = ingestHTTP.Shutdown(shutdownCtx)
 	_ = publicHTTP.Shutdown(shutdownCtx)
 	return nil
+}
+
+func probeGateway(ctx context.Context, srv *server.Server, healthURL string, interval, timeout time.Duration, logger *slog.Logger) {
+	client := &http.Client{Timeout: timeout}
+	probe := func() {
+		probeGatewayOnce(ctx, client, srv, healthURL, logger)
+	}
+	probe()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			probe()
+		}
+	}
+}
+
+func probeGatewayOnce(ctx context.Context, client *http.Client, srv *server.Server, healthURL string, logger *slog.Logger) {
+	previous := srv.GatewayProbe()
+	started := time.Now()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+	if err != nil {
+		srv.RecordGatewayProbe(time.Since(started), 0, err)
+		return
+	}
+	response, err := client.Do(request)
+	statusCode := 0
+	if response != nil {
+		statusCode = response.StatusCode
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
+		_ = response.Body.Close()
+	}
+	srv.RecordGatewayProbe(time.Since(started), statusCode, err)
+	responsive := err == nil && statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices
+	if !responsive && previous.ConsecutiveFailures == 0 {
+		logger.Warn("Gateway response probe failed", "url", healthURL, "status_code", statusCode, "error", err)
+	} else if responsive && previous.ConsecutiveFailures > 0 {
+		logger.Info("Gateway response probe recovered", "url", healthURL, "duration", time.Since(started))
+	}
+}
+
+func refreshPricing(ctx context.Context, catalog *pricing.Catalog, modelsURL, apiKey, cachePath string, interval time.Duration, logger *slog.Logger) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	refresh := func() {
+		refreshCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		if err := catalog.Refresh(refreshCtx, client, modelsURL, apiKey, cachePath); err != nil {
+			logger.Warn("refresh OpenRouter model pricing", "error", err)
+			return
+		}
+		models, updatedAt := catalog.Status()
+		logger.Info("OpenRouter model pricing refreshed", "price_keys", models, "updated_at", updatedAt)
+	}
+	refresh()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh()
+		}
+	}
 }
 
 func configureCrashOutput(logDir string) error {

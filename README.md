@@ -138,7 +138,7 @@ the source of truth for query state.
 | Daemon | `cmd/observatoryd`, `internal/` | Receive, validate, deduplicate, reduce, persist, sample, and expose APIs on `:10087` |
 | Event contract | `schemas/` | Draft 2020-12 envelope and payload limits |
 | Local dashboard | `web/`, `cmd/observatory-web` | Vite-built UI served independently with same-origin API/SSE proxying |
-| Monitoring stack | `deploy/` | Optional Prometheus and Grafana deployment |
+| Monitoring stack | `deploy/` | Optional Prometheus plus remote Grafana dashboard source |
 
 ## Quick start
 
@@ -197,21 +197,28 @@ Skill and read-only `observatory_query` Tool. Agents can answer requests such as
 access. The Tool is fixed to `127.0.0.1:10086`, uses GET requests only, caps
 query size, and cannot restart services or modify data.
 
-## Optional Prometheus and Grafana
+## Prometheus and remote Grafana
 
-This is optional and is not used by the native service installation. If an
-operator separately wants Prometheus/Grafana in containers, first expose only
-the metrics listener to a trusted Docker-reachable address, then run:
+The project does not deploy a local Grafana instance. Dashboards are managed in
+the shared remote Grafana at <https://grafana.yunlongzhu.com>. The Compose file
+starts only Prometheus. First expose only the metrics listener to a trusted
+Docker-reachable address, then run:
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-Docker Desktop scrapes `host.docker.internal:10086`. The daemon binds only to
+Docker Desktop Prometheus scrapes `host.docker.internal:10086`. The daemon binds only to
 `127.0.0.1` by default, so container scraping is intentionally opt-in: start it
 by binding `observatory-web --listen 0.0.0.0:10086` only behind a trusted host
 firewall, or run Prometheus directly on the host. The REST API contains local
 operational identifiers and must not be exposed to an untrusted network.
+
+The source-controlled dashboard is
+`deploy/grafana/dashboards/openclaw-overview.json`. Upload it through the
+Grafana HTTP API using `GRAFANA_TOKEN`; never commit the token. The dashboard
+uses a Prometheus datasource variable so all panels follow the selected remote
+datasource without depending on a local UID.
 
 ## API summary
 

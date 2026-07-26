@@ -396,9 +396,108 @@ type MetricRow struct {
 	Value  float64
 }
 type MetricsSnapshot struct {
-	GatewayUp, Uptime, Restarts, SessionsActive, RunsActive                                                          []MetricRow
-	Runs, LLM, LLMTokensInput, LLMTokensOutput, LLMCost, Tools, ToolErrors, Resources, Received, Dropped, QueueDepth []MetricRow
-	AgentModelTokens, AgentModelCost []MetricRow
+	GatewayUp, GatewayHeartbeatAge, Uptime, Restarts, SessionsActive, RunsActive                                                                              []MetricRow
+	Runs, LLM, LLMTokensInput, LLMTokensOutput, LLMTokensCacheRead, LLMTokensCacheWrite, LLMCost, Tools, ToolErrors, Resources, Received, Dropped, QueueDepth []MetricRow
+	LLMCost24h, AgentModelTokens, AgentModelCost, AgentModelCost24h                                                                                           []MetricRow
+}
+
+type LLMUsageMetricRow struct {
+	InstanceID        string
+	AgentID           string
+	Provider          string
+	Model             string
+	ReportedCost      float64
+	MissingInput      float64
+	MissingOutput     float64
+	MissingCacheRead  float64
+	MissingCacheWrite float64
+}
+
+// EstimateMissingLLMCosts records a price snapshot per completed usage record.
+// Persisting the estimate keeps exported Prometheus counters monotonic when the
+// upstream catalog changes later.
+func (r *Repository) EstimateMissingLLMCosts(ctx context.Context, estimate func(provider, model string, input, output, cacheRead, cacheWrite float64) (float64, bool)) (int, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT rowid,COALESCE(NULLIF(provider,''),'unknown'),COALESCE(NULLIF(model,''),'unknown'),
+	    input_tokens,output_tokens,cache_read_tokens,cache_write_tokens
+	  FROM llm_calls
+	  WHERE cost_usd <= 0 AND estimated_cost_usd <= 0
+	    AND (input_tokens > 0 OR output_tokens > 0 OR cache_read_tokens > 0 OR cache_write_tokens > 0)`)
+	if err != nil {
+		return 0, err
+	}
+	type pendingEstimate struct {
+		rowID int64
+		cost  float64
+	}
+	var pending []pendingEstimate
+	for rows.Next() {
+		var rowID int64
+		var provider, model string
+		var input, output, cacheRead, cacheWrite float64
+		if err := rows.Scan(&rowID, &provider, &model, &input, &output, &cacheRead, &cacheWrite); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if cost, ok := estimate(provider, model, input, output, cacheRead, cacheWrite); ok && cost > 0 {
+			pending = append(pending, pendingEstimate{rowID: rowID, cost: cost})
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if len(pending) == 0 {
+		return 0, nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	for _, item := range pending {
+		if _, err := tx.ExecContext(ctx, `UPDATE llm_calls
+		    SET estimated_cost_usd=?,pricing_source='openrouter'
+		    WHERE rowid=? AND cost_usd <= 0 AND estimated_cost_usd <= 0`, item.cost, item.rowID); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(pending), nil
+}
+
+// LLMUsageForCostMetrics returns reported cost plus token usage for calls where
+// OpenClaw did not report a cost. This prevents estimation from double-counting
+// calls that already carry authoritative upstream billing data.
+func (r *Repository) LLMUsageForCostMetrics(ctx context.Context) ([]LLMUsageMetricRow, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT
+	    l.instance_id,
+	    COALESCE(NULLIF(ar.agent_id,''),'unknown'),
+	    COALESCE(NULLIF(l.provider,''),'unknown'),
+	    COALESCE(NULLIF(l.model,''),'unknown'),
+	    SUM(CASE WHEN l.cost_usd > 0 THEN l.cost_usd ELSE l.estimated_cost_usd END),
+	    SUM(CASE WHEN l.cost_usd <= 0 AND l.estimated_cost_usd <= 0 THEN l.input_tokens ELSE 0 END),
+	    SUM(CASE WHEN l.cost_usd <= 0 AND l.estimated_cost_usd <= 0 THEN l.output_tokens ELSE 0 END),
+	    SUM(CASE WHEN l.cost_usd <= 0 AND l.estimated_cost_usd <= 0 THEN l.cache_read_tokens ELSE 0 END),
+	    SUM(CASE WHEN l.cost_usd <= 0 AND l.estimated_cost_usd <= 0 THEN l.cache_write_tokens ELSE 0 END)
+	  FROM llm_calls l
+	  LEFT JOIN agent_runs ar ON ar.instance_id=l.instance_id AND ar.run_id=l.run_id
+	  GROUP BY l.instance_id,COALESCE(NULLIF(ar.agent_id,''),'unknown'),
+	    COALESCE(NULLIF(l.provider,''),'unknown'),COALESCE(NULLIF(l.model,''),'unknown')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []LLMUsageMetricRow
+	for rows.Next() {
+		var row LLMUsageMetricRow
+		if err := rows.Scan(&row.InstanceID, &row.AgentID, &row.Provider, &row.Model, &row.ReportedCost,
+			&row.MissingInput, &row.MissingOutput, &row.MissingCacheRead, &row.MissingCacheWrite); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
 }
 
 func (r *Repository) Metrics(ctx context.Context, nowUnix float64) (MetricsSnapshot, error) {
@@ -409,22 +508,27 @@ func (r *Repository) Metrics(ctx context.Context, nowUnix float64) (MetricsSnaps
 		labelCols []string
 	}{
 		{&s.GatewayUp, `SELECT instance_id,status,CASE WHEN status='up' THEN 1 ELSE 0 END FROM instances`, []string{"instance", "_status"}},
+		{&s.GatewayHeartbeatAge, `SELECT instance_id,MAX(0,? - unixepoch(MAX(received_at))) FROM events WHERE event_type='gateway.heartbeat' GROUP BY instance_id`, []string{"instance"}},
 		{&s.Uptime, `SELECT instance_id,MAX(0,? - unixepoch(started_at)) FROM instances WHERE started_at IS NOT NULL`, []string{"instance"}},
 		{&s.Restarts, `SELECT instance_id,MAX(COUNT(*)-1,0) FROM events WHERE event_type='gateway.started' GROUP BY instance_id`, []string{"instance"}},
-		{&s.SessionsActive, `SELECT instance_id,COUNT(*) FROM sessions WHERE status='active' GROUP BY instance_id`, []string{"instance"}},
-		{&s.RunsActive, `SELECT instance_id,COUNT(*) FROM agent_runs WHERE status='active' GROUP BY instance_id`, []string{"instance"}},
-		{&s.Runs, `SELECT instance_id,status,COUNT(*) FROM agent_runs GROUP BY instance_id,status`, []string{"instance", "status"}},
+		{&s.SessionsActive, `SELECT instance_id,COALESCE(NULLIF(agent_id,''),'unknown'),COUNT(*) FROM sessions WHERE status='active' GROUP BY instance_id,COALESCE(NULLIF(agent_id,''),'unknown')`, []string{"instance", "agentId"}},
+		{&s.RunsActive, `SELECT instance_id,COALESCE(NULLIF(agent_id,''),'unknown'),COUNT(*) FROM agent_runs WHERE status='active' GROUP BY instance_id,COALESCE(NULLIF(agent_id,''),'unknown')`, []string{"instance", "agentId"}},
+		{&s.Runs, `SELECT instance_id,COALESCE(NULLIF(agent_id,''),'unknown'),status,COUNT(*) FROM agent_runs GROUP BY instance_id,COALESCE(NULLIF(agent_id,''),'unknown'),status`, []string{"instance", "agentId", "status"}},
 		{&s.LLM, `SELECT instance_id,COALESCE(provider,'unknown'),COALESCE(model,'unknown'),status,COUNT(*) FROM llm_calls GROUP BY instance_id,provider,model,status`, []string{"instance", "provider", "model", "status"}},
 		{&s.LLMTokensInput, `SELECT instance_id,COALESCE(provider,'unknown'),COALESCE(model,'unknown'),SUM(input_tokens) FROM llm_calls GROUP BY instance_id,provider,model`, []string{"instance", "provider", "model"}},
 		{&s.LLMTokensOutput, `SELECT instance_id,COALESCE(provider,'unknown'),COALESCE(model,'unknown'),SUM(output_tokens) FROM llm_calls GROUP BY instance_id,provider,model`, []string{"instance", "provider", "model"}},
+		{&s.LLMTokensCacheRead, `SELECT instance_id,COALESCE(provider,'unknown'),COALESCE(model,'unknown'),SUM(cache_read_tokens) FROM llm_calls GROUP BY instance_id,provider,model`, []string{"instance", "provider", "model"}},
+		{&s.LLMTokensCacheWrite, `SELECT instance_id,COALESCE(provider,'unknown'),COALESCE(model,'unknown'),SUM(cache_write_tokens) FROM llm_calls GROUP BY instance_id,provider,model`, []string{"instance", "provider", "model"}},
 		{&s.LLMCost, `SELECT instance_id,COALESCE(provider,'unknown'),COALESCE(model,'unknown'),SUM(cost_usd) FROM llm_calls GROUP BY instance_id,provider,model`, []string{"instance", "provider", "model"}},
+		{&s.LLMCost24h, `SELECT instance_id,COALESCE(provider,'unknown'),COALESCE(model,'unknown'),SUM(CASE WHEN cost_usd>0 THEN cost_usd ELSE estimated_cost_usd END) FROM llm_calls WHERE unixepoch(COALESCE(started_at,ended_at))>=unixepoch()-86400 GROUP BY instance_id,provider,model`, []string{"instance", "provider", "model"}},
 		{&s.Tools, `SELECT instance_id,COALESCE(tool_name,'unknown'),status,COUNT(*) FROM tool_calls GROUP BY instance_id,tool_name,status`, []string{"instance", "tool", "status"}},
 		{&s.ToolErrors, `SELECT instance_id,COALESCE(tool_name,'unknown'),COALESCE(error_category,'unknown'),COUNT(*) FROM tool_calls WHERE status='failed' GROUP BY instance_id,tool_name,error_category`, []string{"instance", "tool", "reason"}},
 		{&s.Received, `SELECT instance_id,event_type,COUNT(*) FROM events GROUP BY instance_id,event_type`, []string{"instance", "event_type"}},
 		{&s.Dropped, `SELECT instance_id,COALESCE(json_extract(payload_json,'$.reason'),'unknown'),SUM(COALESCE(json_extract(payload_json,'$.count'),1)) FROM events WHERE event_type='monitor.events_dropped' GROUP BY instance_id,2`, []string{"instance", "reason"}},
 		{&s.QueueDepth, `SELECT instance_id,COALESCE(CAST(json_extract(payload_json,'$.queueDepth') AS REAL),0) FROM events WHERE rowid IN (SELECT MAX(rowid) FROM events WHERE event_type='gateway.heartbeat' GROUP BY instance_id)`, []string{"instance"}},
-		{&s.AgentModelTokens, `SELECT COALESCE(ar.agent_id,'unknown') AS agent_id,COALESCE(l.model,'unknown') AS model,SUM(l.input_tokens+l.output_tokens+l.cache_read_tokens+l.cache_write_tokens) FROM llm_calls l LEFT JOIN agent_runs ar ON ar.instance_id=l.instance_id AND ar.run_id=l.run_id GROUP BY ar.agent_id,l.model`, []string{"agentId", "model"}},
-		{&s.AgentModelCost, `SELECT COALESCE(ar.agent_id,'unknown') AS agent_id,COALESCE(l.model,'unknown') AS model,SUM(l.cost_usd) FROM llm_calls l LEFT JOIN agent_runs ar ON ar.instance_id=l.instance_id AND ar.run_id=l.run_id GROUP BY ar.agent_id,l.model`, []string{"agentId", "model"}},
+		{&s.AgentModelTokens, `SELECT l.instance_id,COALESCE(NULLIF(ar.agent_id,''),'unknown') AS agent_id,COALESCE(NULLIF(l.model,''),'unknown') AS model,SUM(l.input_tokens+l.output_tokens+l.cache_read_tokens+l.cache_write_tokens) FROM llm_calls l LEFT JOIN agent_runs ar ON ar.instance_id=l.instance_id AND ar.run_id=l.run_id GROUP BY l.instance_id,COALESCE(NULLIF(ar.agent_id,''),'unknown'),COALESCE(NULLIF(l.model,''),'unknown')`, []string{"instance", "agentId", "model"}},
+		{&s.AgentModelCost, `SELECT l.instance_id,COALESCE(NULLIF(ar.agent_id,''),'unknown') AS agent_id,COALESCE(NULLIF(l.model,''),'unknown') AS model,SUM(l.cost_usd) FROM llm_calls l LEFT JOIN agent_runs ar ON ar.instance_id=l.instance_id AND ar.run_id=l.run_id GROUP BY l.instance_id,COALESCE(NULLIF(ar.agent_id,''),'unknown'),COALESCE(NULLIF(l.model,''),'unknown')`, []string{"instance", "agentId", "model"}},
+		{&s.AgentModelCost24h, `SELECT l.instance_id,COALESCE(NULLIF(ar.agent_id,''),'unknown') AS agent_id,COALESCE(NULLIF(l.model,''),'unknown') AS model,SUM(CASE WHEN l.cost_usd>0 THEN l.cost_usd ELSE l.estimated_cost_usd END) FROM llm_calls l LEFT JOIN agent_runs ar ON ar.instance_id=l.instance_id AND ar.run_id=l.run_id WHERE unixepoch(COALESCE(l.started_at,l.ended_at))>=unixepoch()-86400 GROUP BY l.instance_id,COALESCE(NULLIF(ar.agent_id,''),'unknown'),COALESCE(NULLIF(l.model,''),'unknown')`, []string{"instance", "agentId", "model"}},
 	}
 	for _, item := range queries {
 		args := []any{}

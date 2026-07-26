@@ -80,12 +80,20 @@ export function evaluateAlerts(data, config, now = Date.now()) {
   // --- Daemon health & data-flow alerts ---
   const status = data.status || {};
   const daemon = status.daemon || {};
+  const gatewayProbe = status.gatewayProbe || {};
 
   // Daemon not ready
   if (daemon.ready === false) alerts.push(alert(
     "daemon:not-ready", "critical",
     "Observatory daemon 未就绪",
     `daemon version ${daemon.version || "unknown"} — 数据采集可能中断`, "system", "observatoryd",
+  ));
+
+  if (gatewayProbe.lastProbedAt && gatewayProbe.responsive === false) alerts.push(alert(
+    "gateway:unresponsive", "critical",
+    "OpenClaw Gateway 无响应",
+    `主动健康检查连续失败 ${Number(gatewayProbe.consecutiveFailures || 1)} 次 · 最近耗时 ${Number(gatewayProbe.durationSeconds || 0).toFixed(2)}s`,
+    "system", "gateway", gatewayProbe.lastProbedAt,
   ));
 
   // Last event stale (>10min no events at all)

@@ -26,3 +26,18 @@ test("applies acknowledge and silence state without mutating alert identity", ()
   assert.equal(decorated[1].silenced, true);
   assert.deepEqual(alerts[0], { id: "a", severity: "warning" });
 });
+
+test("raises a critical alert when the Gateway process exists but the active probe fails", () => {
+  const alerts = evaluateAlerts({
+    status: {
+      gatewayProbe: {
+        responsive: false,
+        consecutiveFailures: 4,
+        durationSeconds: 3,
+        lastProbedAt: "2026-07-18T12:00:00Z",
+      },
+      instances: [{ instanceId: "local", status: "up", lastSeenAt: "2026-07-18T12:00:00Z" }],
+    },
+  }, {}, Date.parse("2026-07-18T12:00:05Z"));
+  assert.ok(alerts.some((item) => item.id === "gateway:unresponsive" && item.severity === "critical"));
+});

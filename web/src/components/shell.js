@@ -19,7 +19,8 @@ export function shell({
 }) {
   const instances = data?.status?.instances || [];
   const agents = data?.agents || [];
-  const gatewayUp = instances.some((x) => x.status === "up");
+  const gatewayProbe = data?.status?.gatewayProbe;
+  const gatewayUp = instances.some((x) => x.status === "up") && (!gatewayProbe?.lastProbedAt || gatewayProbe.responsive !== false);
   const compatible = !data || (data.status?.apiVersion === 3 && data.status?.capabilities?.includes("timeseries-v3"));
   const domain = observabilityDomain(activeDomain);
   const charts = chartsForDomain(config.customCharts, domain.id);
@@ -46,7 +47,7 @@ export function shell({
     <nav class="topbar">
       <div class="brand"><i></i><div><strong>OpenClaw Observatory</strong><span>v0.4</span></div></div>
       <div class="toolbar">
-        <div class="gateway"><i class="${gatewayUp ? "up" : "down"}"></i>${gatewayUp ? "Gateway online" : "Gateway offline"}</div>
+        <div class="gateway"><i class="${gatewayUp ? "up" : "down"}"></i>${gatewayUp ? `Gateway responding${gatewayProbe?.durationSeconds != null ? ` · ${Math.round(gatewayProbe.durationSeconds * 1000)}ms` : ""}` : "Gateway no response"}</div>
         <div class="ranges">${RANGE_KEYS.map((key) => `<button data-range="${key}" class="${filters.range === key ? "active" : ""}">${key}</button>`).join("")}</div>
         <select id="instance-filter" aria-label="实例"><option value="">全部实例</option>${instances.map((x) => `<option value="${esc(x.instanceId)}" ${filters.instanceId === x.instanceId ? "selected" : ""}>${esc(x.instanceId)}</option>`).join("")}</select>
         <select id="agent-filter" aria-label="Agent"><option value="">全部 Agent</option>${agents.map((x) => `<option value="${esc(x.agentId)}" ${filters.agentId === x.agentId ? "selected" : ""}>${esc(x.agentId)}</option>`).join("")}</select>

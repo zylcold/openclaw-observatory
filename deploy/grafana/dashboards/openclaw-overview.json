@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "editable": true,
+  "editable": false,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
   "id": null,
@@ -11,18 +11,20 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "Gateway Status",
+      "title": "Gateway Responsive",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 4,
-        "w": 5,
+        "w": 4,
         "x": 0,
         "y": 0
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "max(openclaw_gateway_up)",
-          "legendFormat": "Gateway"
+          "expr": "min(openclaw_gateway_responsive{instance=~\"$instance\"})",
+          "legendFormat": "HTTP health probe",
+          "instant": true
         }
       ],
       "fieldConfig": {
@@ -32,11 +34,11 @@
               "type": "value",
               "options": {
                 "0": {
-                  "text": "DOWN",
+                  "text": "NO RESPONSE",
                   "color": "red"
                 },
                 "1": {
-                  "text": "UP",
+                  "text": "RESPONDING",
                   "color": "green"
                 }
               }
@@ -65,17 +67,19 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Uptime",
+      "title": "Gateway Response Time",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 4,
-        "w": 5,
-        "x": 5,
+        "w": 4,
+        "x": 4,
         "y": 0
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "max(openclaw_gateway_uptime_seconds)"
+          "expr": "max(openclaw_gateway_response_duration_seconds{instance=~\"$instance\"})",
+          "instant": true
         }
       ],
       "fieldConfig": {
@@ -89,16 +93,18 @@
       "id": 3,
       "type": "stat",
       "title": "Active Sessions",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 4,
-        "w": 5,
-        "x": 10,
+        "w": 4,
+        "x": 8,
         "y": 0
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(openclaw_sessions_active)"
+          "expr": "sum(openclaw_sessions_active{instance=~\"$instance\",agentId=~\"$agent\"})",
+          "instant": true
         }
       ]
     },
@@ -106,23 +112,52 @@
       "id": 4,
       "type": "stat",
       "title": "Active Agent Runs",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 4,
-        "w": 5,
-        "x": 15,
+        "w": 4,
+        "x": 12,
         "y": 0
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(openclaw_agent_runs_active)"
+          "expr": "sum(openclaw_agent_runs_active{instance=~\"$instance\",agentId=~\"$agent\"})",
+          "instant": true
         }
       ]
     },
     {
       "id": 5,
       "type": "stat",
-      "title": "Tokens Today",
+      "title": "Tokens (24h)",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(openclaw_llm_tokens_total{instance=~\"$instance\",model=~\"$model\"}[24h]))",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "SI",
+          "decimals": 1
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Cost (24h)",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 4,
         "w": 4,
@@ -132,13 +167,14 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(openclaw_llm_tokens_total[24h]))"
+          "expr": "sum(openclaw_llm_cost_usd_24h{instance=~\"$instance\",model=~\"$model\"})",
+          "instant": true
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "SI",
-          "decimals": 1
+          "unit": "currencyUSD",
+          "decimals": 2
         },
         "overrides": []
       }
@@ -159,6 +195,7 @@
       "id": 7,
       "type": "timeseries",
       "title": "CPU Usage",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 6,
         "w": 8,
@@ -168,13 +205,13 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(openclaw_process_cpu_seconds_total[5m])",
+          "expr": "100 * rate(openclaw_process_cpu_seconds_total{instance=~\"$instance\"}[$__rate_interval])",
           "legendFormat": "{{instance}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "percent",
           "min": 0
         },
         "overrides": []
@@ -184,6 +221,7 @@
       "id": 8,
       "type": "timeseries",
       "title": "RSS / Virtual Memory",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 6,
         "w": 8,
@@ -193,12 +231,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "openclaw_process_resident_memory_bytes",
+          "expr": "openclaw_process_resident_memory_bytes{instance=~\"$instance\"}",
           "legendFormat": "RSS {{instance}}"
         },
         {
           "refId": "B",
-          "expr": "openclaw_process_virtual_memory_bytes",
+          "expr": "openclaw_process_virtual_memory_bytes{instance=~\"$instance\"}",
           "legendFormat": "VM {{instance}}"
         }
       ],
@@ -213,6 +251,7 @@
       "id": 9,
       "type": "timeseries",
       "title": "Threads & File Descriptors",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 6,
         "w": 8,
@@ -222,12 +261,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "openclaw_process_threads",
+          "expr": "openclaw_process_threads{instance=~\"$instance\"}",
           "legendFormat": "Threads {{instance}}"
         },
         {
           "refId": "B",
-          "expr": "openclaw_process_open_fds",
+          "expr": "openclaw_process_open_fds{instance=~\"$instance\"}",
           "legendFormat": "FDs {{instance}}"
         }
       ],
@@ -243,6 +282,7 @@
       "id": 10,
       "type": "timeseries",
       "title": "Disk I/O",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 6,
         "w": 8,
@@ -252,12 +292,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(openclaw_process_read_bytes_total[5m])",
+          "expr": "rate(openclaw_process_read_bytes_total{instance=~\"$instance\"}[$__rate_interval])",
           "legendFormat": "Read {{instance}}"
         },
         {
           "refId": "B",
-          "expr": "rate(openclaw_process_write_bytes_total[5m])",
+          "expr": "rate(openclaw_process_write_bytes_total{instance=~\"$instance\"}[$__rate_interval])",
           "legendFormat": "Write {{instance}}"
         }
       ],
@@ -271,7 +311,8 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "Disk Space",
+      "title": "Disk Free",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 6,
         "w": 8,
@@ -281,18 +322,32 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "openclaw_host_disk_available_bytes",
-          "legendFormat": "Available {{instance}}"
-        },
-        {
-          "refId": "B",
-          "expr": "openclaw_host_disk_total_bytes",
-          "legendFormat": "Total {{instance}}"
+          "expr": "100 * openclaw_host_disk_available_bytes{instance=~\"$instance\"} / clamp_min(openclaw_host_disk_total_bytes{instance=~\"$instance\"}, 1)",
+          "legendFormat": "{{instance}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes"
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 10
+              },
+              {
+                "color": "green",
+                "value": 20
+              }
+            ]
+          }
         },
         "overrides": []
       }
@@ -300,7 +355,8 @@
     {
       "id": 12,
       "type": "timeseries",
-      "title": "LLM Requests",
+      "title": "LLM Request Rate",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 6,
         "w": 8,
@@ -310,7 +366,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (model) (rate(openclaw_llm_requests_total[5m]))",
+          "expr": "sum by (model) (rate(openclaw_llm_requests_total{instance=~\"$instance\",model=~\"$model\"}[$__rate_interval]))",
           "legendFormat": "{{model}}"
         }
       ]
@@ -331,6 +387,7 @@
       "id": 13,
       "type": "timeseries",
       "title": "Tool Calls and Errors",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 6,
         "w": 12,
@@ -340,12 +397,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (tool) (rate(openclaw_tool_calls_total[5m]))",
+          "expr": "sum by (tool) (rate(openclaw_tool_calls_total{instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "{{tool}}"
         },
         {
           "refId": "B",
-          "expr": "sum by (tool) (rate(openclaw_tool_errors_total[5m]))",
+          "expr": "sum by (tool) (rate(openclaw_tool_errors_total{instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "{{tool}} errors"
         }
       ]
@@ -354,6 +411,7 @@
       "id": 14,
       "type": "timeseries",
       "title": "Restarts and Dropped Events",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 6,
         "w": 12,
@@ -363,12 +421,12 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(increase(openclaw_gateway_restarts_total[1h]))",
+          "expr": "sum(increase(openclaw_gateway_restarts_total{instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "restarts"
         },
         {
           "refId": "B",
-          "expr": "sum(increase(openclaw_monitor_events_dropped_total[1h]))",
+          "expr": "sum(increase(openclaw_monitor_events_dropped_total{instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "dropped"
         }
       ]
@@ -377,6 +435,7 @@
       "id": 15,
       "type": "timeseries",
       "title": "Event Queue Depth",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 6,
         "w": 12,
@@ -386,7 +445,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "openclaw_monitor_event_queue_depth",
+          "expr": "openclaw_monitor_event_queue_depth{instance=~\"$instance\"}",
           "legendFormat": "{{instance}}"
         }
       ],
@@ -401,7 +460,8 @@
     {
       "id": 16,
       "type": "timeseries",
-      "title": "Insert/Query Duration",
+      "title": "Response & Pipeline Duration",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 6,
         "w": 12,
@@ -411,13 +471,23 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "rate(openclaw_monitor_insert_duration_seconds_sum[5m]) / rate(openclaw_monitor_insert_duration_seconds_count[5m])",
+          "expr": "rate(openclaw_monitor_insert_duration_seconds_sum[$__rate_interval]) / clamp_min(rate(openclaw_monitor_insert_duration_seconds_count[$__rate_interval]), 1e-9)",
           "legendFormat": "Insert avg"
         },
         {
           "refId": "B",
-          "expr": "rate(openclaw_monitor_query_duration_seconds_sum[5m]) / rate(openclaw_monitor_query_duration_seconds_count[5m])",
+          "expr": "rate(openclaw_monitor_query_duration_seconds_sum[$__rate_interval]) / clamp_min(rate(openclaw_monitor_query_duration_seconds_count[$__rate_interval]), 1e-9)",
           "legendFormat": "Query avg"
+        },
+        {
+          "refId": "C",
+          "expr": "max(openclaw_gateway_response_duration_seconds{instance=~\"$instance\"})",
+          "legendFormat": "Gateway response"
+        },
+        {
+          "refId": "D",
+          "expr": "max(openclaw_gateway_heartbeat_age_seconds{instance=~\"$instance\"})",
+          "legendFormat": "Heartbeat age"
         }
       ],
       "fieldConfig": {
@@ -443,6 +513,7 @@
       "id": 18,
       "type": "bargauge",
       "title": "Active Sessions by Agent",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -452,8 +523,9 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (agentId) (openclaw_sessions_active)",
-          "legendFormat": "{{agentId}}"
+          "expr": "topk(10, sum by (agentId) (openclaw_sessions_active{instance=~\"$instance\",agentId=~\"$agent\"}))",
+          "legendFormat": "{{agentId}}",
+          "instant": true
         }
       ],
       "fieldConfig": {
@@ -472,6 +544,7 @@
       "id": 19,
       "type": "bargauge",
       "title": "Active Runs by Agent",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -481,8 +554,9 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (agentId) (openclaw_agent_runs_active)",
-          "legendFormat": "{{agentId}}"
+          "expr": "topk(10, sum by (agentId) (openclaw_agent_runs_active{instance=~\"$instance\",agentId=~\"$agent\"}))",
+          "legendFormat": "{{agentId}}",
+          "instant": true
         }
       ],
       "fieldConfig": {
@@ -500,7 +574,8 @@
     {
       "id": 20,
       "type": "timeseries",
-      "title": "Tokens by Agent",
+      "title": "Token Rate by Agent",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -510,7 +585,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (agentId) (rate(openclaw_llm_tokens_total[5m]))",
+          "expr": "sum by (agentId) (rate(openclaw_llm_tokens_by_agent_model_total{instance=~\"$instance\",agentId=~\"$agent\",model=~\"$model\"}[$__rate_interval]))",
           "legendFormat": "{{agentId}}"
         }
       ],
@@ -524,7 +599,8 @@
     {
       "id": 21,
       "type": "timeseries",
-      "title": "Runs by Agent (Status)",
+      "title": "Run Rate by Agent (Status)",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -534,7 +610,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (agentId,status) (rate(openclaw_agent_runs_total[5m]))",
+          "expr": "sum by (agentId,status) (rate(openclaw_agent_runs_total{instance=~\"$instance\",agentId=~\"$agent\"}[$__rate_interval]))",
           "legendFormat": "{{agentId}} {{status}}"
         }
       ]
@@ -542,7 +618,8 @@
     {
       "id": 22,
       "type": "timeseries",
-      "title": "Tokens by Agent (Timeseries)",
+      "title": "Cost / Hour by Agent",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -552,13 +629,14 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (agentId) (rate(openclaw_llm_tokens_total[5m]))",
+          "expr": "3600 * sum by (agentId) (rate(openclaw_llm_cost_usd_by_agent_model_total{instance=~\"$instance\",agentId=~\"$agent\",model=~\"$model\"}[$__rate_interval]))",
           "legendFormat": "{{agentId}}"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "SI"
+          "unit": "currencyUSD",
+          "decimals": 3
         },
         "overrides": []
       }
@@ -571,24 +649,25 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 47
       },
       "collapsed": false
     },
     {
       "id": 23,
       "type": "timeseries",
-      "title": "Tokens by Model",
+      "title": "Token Rate by Model",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 6,
         "w": 8,
         "x": 0,
-        "y": 46
+        "y": 48
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (model) (rate(openclaw_llm_tokens_total[5m]))",
+          "expr": "sum by (model) (rate(openclaw_llm_tokens_total{instance=~\"$instance\",model=~\"$model\"}[$__rate_interval]))",
           "legendFormat": "{{model}}"
         }
       ],
@@ -602,17 +681,18 @@
     {
       "id": 24,
       "type": "timeseries",
-      "title": "Requests by Model",
+      "title": "Request Rate by Model",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 6,
         "w": 8,
         "x": 8,
-        "y": 46
+        "y": 48
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (model) (rate(openclaw_llm_requests_total[5m]))",
+          "expr": "sum by (model) (rate(openclaw_llm_requests_total{instance=~\"$instance\",model=~\"$model\"}[$__rate_interval]))",
           "legendFormat": "{{model}}"
         }
       ]
@@ -621,16 +701,17 @@
       "id": 25,
       "type": "timeseries",
       "title": "Tokens by Direction",
+      "datasource": {"type": "prometheus", "uid": "$datasource"},
       "gridPos": {
         "h": 6,
         "w": 8,
         "x": 16,
-        "y": 46
+        "y": 48
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (direction) (rate(openclaw_llm_tokens_total[5m]))",
+          "expr": "sum by (direction) (rate(openclaw_llm_tokens_total{instance=~\"$instance\",model=~\"$model\"}[$__rate_interval]))",
           "legendFormat": "{{direction}}"
         }
       ],
@@ -644,22 +725,24 @@
     {
       "id": 26,
       "type": "timeseries",
-      "title": "Hourly Tokens by Model (Stacked)",
+      "title": "Hourly Tokens by Model (24h Stacked)",
+      "description": "OpenRouter-style hourly buckets. Each bar is one hour; colors show the model mix.",
       "gridPos": {
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 52
+        "y": 54
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "bfsvbblijn7cwf"
+        "uid": "$datasource"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (model) (increase(openclaw_llm_tokens_total[1h]) > 0)",
-          "legendFormat": "{{model}}"
+          "expr": "sum by (model) (increase(openclaw_llm_tokens_total{instance=~\"$instance\",model=~\"$model\"}[1h]))",
+          "legendFormat": "{{model}}",
+          "interval": "1h"
         }
       ],
       "fieldConfig": {
@@ -768,39 +851,280 @@
             ]
           }
         ]
+      },
+      "interval": "1h",
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum",
+            "max"
+          ],
+          "width": 260
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 29,
+      "type": "timeseries",
+      "title": "Hourly Cost by Model (24h Stacked)",
+      "description": "Hourly reported or OpenRouter-estimated USD cost, stacked by model.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 62
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (model) (increase(openclaw_llm_cost_usd_total{instance=~\"$instance\",model=~\"$model\"}[1h]))",
+          "legendFormat": "{{model}}",
+          "interval": "1h"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 3,
+          "min": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 0,
+            "fillOpacity": 80,
+            "stacking": {
+              "mode": "normal"
+            },
+            "pointSize": 3
+          }
+        },
+        "overrides": []
+      },
+      "interval": "1h",
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "sum",
+            "max"
+          ],
+          "width": 260
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       }
     },
     {
       "id": 500,
       "type": "row",
-      "title": "Agent × Model Consumption",
+      "title": "Agent × Model Consumption & Share",
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 60
+        "y": 70
       },
-      "collapsed": true
+      "collapsed": false
     },
     {
-      "id": 27,
-      "type": "timeseries",
-      "title": "Cumulative Tokens by Model (Stacked)",
+      "id": 30,
+      "type": "piechart",
+      "title": "Model Share for Selected Agent (24h)",
+      "description": "Choose one or more agents above. The donut shows each model's share of their token usage over the rolling 24 hours.",
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 8,
         "x": 0,
-        "y": 60
+        "y": 71
       },
       "datasource": {
         "type": "prometheus",
-        "uid": "bfsvbblijn7cwf"
+        "uid": "$datasource"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "sum by (model) (openclaw_llm_tokens_total)",
-          "legendFormat": "{{model}}"
+          "expr": "topk(12, sum by (model) (increase(openclaw_llm_tokens_by_agent_model{agentId=~\"$agent\",model=~\"$model\"}[24h])))",
+          "legendFormat": "{{model}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "SI",
+          "decimals": 0,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "pieType": "donut",
+        "displayLabels": [
+          "name",
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "percent",
+            "value"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 31,
+      "type": "bargauge",
+      "title": "Model Share within Each Agent (24h)",
+      "description": "Percentage of each agent's rolling 24-hour tokens attributed to a model.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 71
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(30, 100 * sum by (agentId,model) (increase(openclaw_llm_tokens_by_agent_model{agentId=~\"$agent\",model=~\"$model\"}[24h])) / on (agentId) group_left clamp_min(sum by (agentId) (increase(openclaw_llm_tokens_by_agent_model{agentId=~\"$agent\",model=~\"$model\"}[24h])), 1))",
+          "legendFormat": "{{agentId}} · {{model}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 50
+              },
+              {
+                "color": "orange",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "minVizWidth": 8,
+        "minVizHeight": 18,
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 32,
+      "type": "bargauge",
+      "title": "Cost by Agent × Model (24h)",
+      "description": "Reported cost when available; otherwise estimated from the cached OpenRouter token price catalog.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 71
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(20, sum by (agentId,model) (openclaw_llm_cost_usd_by_agent_model_24h{instance=~\"$instance\",agentId=~\"$agent\",model=~\"$model\"}))",
+          "legendFormat": "{{agentId}} · {{model}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "lcd",
+        "showUnfilled": true,
+        "minVizWidth": 8,
+        "minVizHeight": 18,
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        }
+      }
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Token Rate by Agent × Model",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 79
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(20, sum by (agentId,model) (rate(openclaw_llm_tokens_by_agent_model_total{instance=~\"$instance\",agentId=~\"$agent\",model=~\"$model\"}[$__rate_interval])))",
+          "legendFormat": "{{agentId}} · {{model}}"
         }
       ],
       "fieldConfig": {
@@ -810,109 +1134,87 @@
           "custom": {
             "drawStyle": "line",
             "lineWidth": 2,
-            "fillOpacity": 20,
+            "fillOpacity": 12,
             "stacking": {
-              "mode": "normal"
+              "mode": "none"
             },
             "pointSize": 5
           }
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "glm-5.2"
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "width": 260
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Cost / Hour by Agent × Model",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 79
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "$datasource"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(20, 3600 * sum by (agentId,model) (rate(openclaw_llm_cost_usd_by_agent_model_total{instance=~\"$instance\",agentId=~\"$agent\",model=~\"$model\"}[$__rate_interval])))",
+          "legendFormat": "{{agentId}} · {{model}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 3,
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "stacking": {
+              "mode": "none"
             },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#5794F2"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "glm-5"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#F2CC0C"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "glm-5-turbo"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#FF9830"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "qwen3.7-plus"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#B877D9"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "mimo-v2.5-pro"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#E02F44"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "glm-4.7"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "mode": "fixed",
-                  "fixedColor": "#96D98D"
-                }
-              }
-            ]
+            "pointSize": 3
           }
-        ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "width": 260
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       }
     }
   ],
-  "refresh": "15s",
+  "refresh": "30s",
   "schemaVersion": 41,
   "tags": [
     "openclaw",
@@ -920,14 +1222,108 @@
     "local-first"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "refresh": 1,
+        "options": [],
+        "current": {}
+      },
+      {
+        "name": "instance",
+        "label": "Instance",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$datasource"
+        },
+        "definition": "label_values(openclaw_gateway_up, instance)",
+        "query": {
+          "query": "label_values(openclaw_gateway_up, instance)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "agent",
+        "label": "Agent",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$datasource"
+        },
+        "definition": "label_values(openclaw_llm_tokens_by_agent_model_total{instance=~\"$instance\"}, agentId)",
+        "query": {
+          "query": "label_values(openclaw_llm_tokens_by_agent_model_total{instance=~\"$instance\"}, agentId)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      },
+      {
+        "name": "model",
+        "label": "Model",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "$datasource"
+        },
+        "definition": "label_values(openclaw_llm_tokens_total{instance=~\"$instance\"}, model)",
+        "query": {
+          "query": "label_values(openclaw_llm_tokens_total{instance=~\"$instance\"}, model)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "refresh": 1,
+        "sort": 1,
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        }
+      }
+    ]
   },
   "time": {
-    "from": "now-6h",
+    "from": "now-24h",
     "to": "now"
   },
   "timezone": "browser",
   "title": "OpenClaw Observatory Overview",
   "uid": "openclaw-observatory",
-  "version": 2
+  "version": 3
 }

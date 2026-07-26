@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -53,6 +54,7 @@ func TestMetricsExposeWriteTimings(t *testing.T) {
 	}
 	defer repo.Close()
 	srv := New(repo, slog.Default())
+	srv.RecordGatewayProbe(125*time.Millisecond, http.StatusOK, nil)
 	if err := srv.Insert(t.Context(), []event.Event{{
 		SchemaVersion: 1, EventID: "10000000-0000-4000-8000-000000000001", EventType: "gateway.heartbeat",
 		OccurredAt: time.Now().UTC(), InstanceID: "test", ProducerID: "test", Sequence: 1, Source: "test", Payload: json.RawMessage(`{"queueDepth":42,"queueCapacity":100}`),
@@ -75,9 +77,136 @@ func TestMetricsExposeWriteTimings(t *testing.T) {
 		"openclaw_monitor_commit_duration_seconds_count 1",
 		"openclaw_monitor_event_queue_depth{instance=\"test\"} 42",
 		"openclaw_monitor_query_duration_seconds_count 1",
+		"openclaw_gateway_responsive{instance=\"test\"} 1",
+		"openclaw_gateway_response_duration_seconds{instance=\"test\"} 0.125",
+		"openclaw_gateway_probe_consecutive_failures{instance=\"test\"} 0",
+		"openclaw_gateway_heartbeat_age_seconds{instance=\"test\"}",
+		"# TYPE openclaw_llm_tokens_by_agent_model_total counter",
+		"# TYPE openclaw_llm_cost_usd_by_agent_model_total counter",
+		"# TYPE openclaw_llm_tokens_by_agent_model counter",
 	} {
 		if !strings.Contains(res.Body.String(), metric) {
 			t.Fatalf("metric %q missing from response:\n%s", metric, res.Body.String())
+		}
+	}
+}
+
+func TestGatewayProbeFailureIsExposedInStatusAndMetrics(t *testing.T) {
+	repo, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	srv := New(repo, slog.Default())
+	if err := srv.Insert(t.Context(), []event.Event{{
+		SchemaVersion: 1, EventID: "10000000-0000-4000-8000-000000000099", EventType: "gateway.heartbeat",
+		OccurredAt: time.Now().UTC(), InstanceID: "test", ProducerID: "test", Sequence: 1, Source: "test", Payload: json.RawMessage(`{}`),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	srv.RecordGatewayProbe(3*time.Second, 0, context.DeadlineExceeded)
+
+	status := httptest.NewRecorder()
+	srv.PublicHandler().ServeHTTP(status, httptest.NewRequest(http.MethodGet, "/api/v1/status", nil))
+	if !strings.Contains(status.Body.String(), `"gatewayProbe":{"responsive":false`) {
+		t.Fatalf("status did not expose the failed probe: %s", status.Body.String())
+	}
+
+	metrics := httptest.NewRecorder()
+	srv.PublicHandler().ServeHTTP(metrics, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	for _, metric := range []string{
+		`openclaw_gateway_responsive{instance="test"} 0`,
+		`openclaw_gateway_response_duration_seconds{instance="test"} 3`,
+		`openclaw_gateway_probe_consecutive_failures{instance="test"} 1`,
+	} {
+		if !strings.Contains(metrics.Body.String(), metric) {
+			t.Fatalf("metric %q missing from response:\n%s", metric, metrics.Body.String())
+		}
+	}
+}
+
+func TestMetricsExposeAgentModelAndCacheDimensions(t *testing.T) {
+	repo, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	srv := New(repo, slog.Default())
+	now := time.Now().UTC()
+	events := []event.Event{
+		{
+			SchemaVersion: 1, EventID: "20000000-0000-4000-8000-000000000001", EventType: "session.started",
+			OccurredAt: now, InstanceID: "test", ProducerID: "test", Sequence: 1, Source: "test",
+			Payload: json.RawMessage(`{"sessionId":"session-metrics","agentId":"tom"}`),
+		},
+		{
+			SchemaVersion: 1, EventID: "20000000-0000-4000-8000-000000000002", EventType: "agent.started",
+			OccurredAt: now, InstanceID: "test", ProducerID: "test", Sequence: 2, Source: "test",
+			Payload: json.RawMessage(`{"runId":"run-metrics","sessionId":"session-metrics","agentId":"tom"}`),
+		},
+		{
+			SchemaVersion: 1, EventID: "20000000-0000-4000-8000-000000000003", EventType: "llm.completed",
+			OccurredAt: now, InstanceID: "test", ProducerID: "test", Sequence: 3, Source: "test",
+			Payload: json.RawMessage(`{"callId":"call-metrics","runId":"run-metrics","sessionId":"session-metrics","provider":"bailian","model":"qwen","inputTokens":2,"outputTokens":3,"cacheReadTokens":4,"cacheWriteTokens":5,"costUsd":0.25}`),
+		},
+	}
+	if err := srv.Insert(t.Context(), events); err != nil {
+		t.Fatal(err)
+	}
+	res := httptest.NewRecorder()
+	srv.PublicHandler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("unexpected metrics status: %d", res.Code)
+	}
+	for _, metric := range []string{
+		`openclaw_llm_tokens_total{direction="cache_read",instance="test",model="qwen",provider="bailian"} 4`,
+		`openclaw_llm_tokens_total{direction="cache_write",instance="test",model="qwen",provider="bailian"} 5`,
+		`openclaw_llm_tokens_by_agent_model_total{agentId="tom",instance="test",model="qwen"} 14`,
+		`openclaw_llm_cost_usd_by_agent_model_total{agentId="tom",instance="test",model="qwen"} 0.25`,
+	} {
+		if !strings.Contains(res.Body.String(), metric) {
+			t.Fatalf("metric %q missing from response:\n%s", metric, res.Body.String())
+		}
+	}
+}
+
+func TestMetricsEstimateMissingCostFromOpenRouterCatalog(t *testing.T) {
+	repo, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	srv := New(repo, slog.Default())
+	now := time.Now().UTC()
+	events := []event.Event{
+		{
+			SchemaVersion: 1, EventID: "30000000-0000-4000-8000-000000000001", EventType: "agent.started",
+			OccurredAt: now, InstanceID: "test", ProducerID: "test", Sequence: 1, Source: "test",
+			Payload: json.RawMessage(`{"runId":"run-priced","sessionId":"session-priced","agentId":"tom"}`),
+		},
+		{
+			SchemaVersion: 1, EventID: "30000000-0000-4000-8000-000000000002", EventType: "llm.completed",
+			OccurredAt: now, InstanceID: "test", ProducerID: "test", Sequence: 2, Source: "test",
+			Payload: json.RawMessage(`{"callId":"call-priced","runId":"run-priced","sessionId":"session-priced","provider":"bailian","model":"qwen3.7-plus","inputTokens":1000000,"outputTokens":1000000,"costUsd":0}`),
+		},
+	}
+	if err := srv.Insert(t.Context(), events); err != nil {
+		t.Fatal(err)
+	}
+	res := httptest.NewRecorder()
+	srv.PublicHandler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if res.Code != http.StatusOK {
+		t.Fatalf("unexpected metrics status: %d", res.Code)
+	}
+	for _, metric := range []string{
+		`openclaw_llm_cost_usd_total{instance="test",model="qwen3.7-plus",provider="bailian"} 1.6`,
+		`openclaw_llm_cost_usd_24h{instance="test",model="qwen3.7-plus",provider="bailian"} 1.6`,
+		`openclaw_llm_cost_usd_by_agent_model_total{agentId="tom",instance="test",model="qwen3.7-plus"} 1.6`,
+		`openclaw_llm_cost_usd_by_agent_model_24h{agentId="tom",instance="test",model="qwen3.7-plus"} 1.6`,
+		`openclaw_llm_cost_by_agent_model{agentId="tom",model="qwen3.7-plus"} 1.6`,
+	} {
+		if !strings.Contains(res.Body.String(), metric) {
+			t.Fatalf("estimated metric %q missing from response:\n%s", metric, res.Body.String())
 		}
 	}
 }
