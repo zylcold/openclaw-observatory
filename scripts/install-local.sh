@@ -58,7 +58,21 @@ if ! openclaw plugins inspect openclaw-observatory >/dev/null 2>&1; then
   openclaw plugins install "$ROOT/plugin" --link
 fi
 openclaw plugins enable openclaw-observatory
-openclaw gateway restart
+if ! openclaw gateway restart; then
+  GATEWAY_RECOVERED=""
+  for _ in $(seq 1 15); do
+    if curl -fsS --max-time 2 http://127.0.0.1:18789/health >/dev/null 2>&1; then
+      GATEWAY_RECOVERED=1
+      echo "Gateway LaunchAgent recovered after restart command returned an error."
+      break
+    fi
+    sleep 1
+  done
+  if [[ -z "$GATEWAY_RECOVERED" ]]; then
+    echo "Gateway did not recover after restart failure." >&2
+    exit 1
+  fi
+fi
 
 STATUS=""
 for _ in $(seq 1 30); do
@@ -74,7 +88,7 @@ if [[ -z "$STATUS" ]]; then
   exit 1
 fi
 PAGE="$(curl -fsS --max-time 5 http://127.0.0.1:10086/)"
-if [[ "$STATUS" != *'"apiVersion":3'* || "$STATUS" != *'"schemaVersion":6'* || "$STATUS" != *'timeseries-v3'* || "$STATUS" != *'trace-span-v6'* || "$STATUS" != *'anomaly-signals-v6'* ]]; then
+if [[ "$STATUS" != *'"apiVersion":3'* || "$STATUS" != *'"schemaVersion":7'* || "$STATUS" != *'timeseries-v3'* || "$STATUS" != *'trace-span-v6'* || "$STATUS" != *'anomaly-signals-v6'* ]]; then
   echo "Observatory backend compatibility check failed: $STATUS" >&2
   exit 1
 fi
