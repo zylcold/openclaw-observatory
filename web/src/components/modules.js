@@ -170,9 +170,15 @@ function heatmap(data) {
       html2 += "<i title=\"" + esc(agent) + " · " + esc(shortTime(time)) + ": " + value + "\" style=\"--heat:" + (value / max) + "\"></i>";
     });
   });
+<<<<<<< HEAD
+  html += "<div class=\"heat-legend\"><span>0</span><i></i><span>" + compact(max) + "</span></div>";
+  html += "</div>";
+  return html;
+=======
   html2 += "<div class=\"heat-legend\"><span>0</span><i></i><span>" + compact(max) + "</span></div>";
   html2 += "</div>";
   return html2;
+>>>>>>> origin/main
 }
 
 function waterfall(detail) {
@@ -357,8 +363,12 @@ export function moduleHTML(id, data, config, sessionDetail, kpiEditorOpen, optio
   if (id === "resources") body = chart("resources-chart");
   if (id === "llm_combo") body = chart("llm-combo-chart");
   if (id === "model_tokens") body = chart("model-token-chart", true);
+<<<<<<< HEAD
+  if (id === "shares") body = "<div class=\"split charts\"><section><h3>Token by Model</h3>" + chart("token-share-chart") + "</section><section><h3>Tool Calls · Top 7 + Full Ranking</h3>" + chart("tool-share-chart") + "<div class=\"tool-ranking-wrap\">" + toolRanking(data.tools) + "</div></section></div>";
+=======
   if (id === "token_share") body = chart("token-share-chart");
   if (id === "tool_share") body = chart("tool-share-chart") + "<div class=\"tool-ranking-wrap\">" + toolRanking(data.tools) + "</div>";
+>>>>>>> origin/main
   if (id === "scatter") body = chart("scatter-chart");
   if (id === "agent_compare") body = chart("agent-chart") + "<div class=\"chart tall\"><canvas id=\"agent-model-chart\"></canvas></div>" + agentTable(data);
   if (id === "heatmap") body = heatmap(data);
