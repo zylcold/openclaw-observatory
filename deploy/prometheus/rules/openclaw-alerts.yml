@@ -10,6 +10,38 @@ groups:
           summary: OpenClaw Gateway is down
           description: "Instance {{ $labels.instance }} has been down for two minutes."
 
+      - alert: OpenClawGatewayUnresponsive
+        expr: openclaw_gateway_responsive == 0
+        for: 30s
+        labels: { severity: critical }
+        annotations:
+          summary: OpenClaw Gateway is running but not responding
+          description: "Instance {{ $labels.instance }} has failed active HTTP health probes for 30 seconds."
+
+      - alert: OpenClawGatewaySlowResponse
+        expr: openclaw_gateway_response_duration_seconds > 2
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: OpenClaw Gateway response is slow
+          description: "Instance {{ $labels.instance }} active health probe has exceeded two seconds for five minutes."
+
+      - alert: OpenClawGatewayHeartbeatStale
+        expr: openclaw_gateway_heartbeat_age_seconds > 120
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: OpenClaw Gateway heartbeat is stale
+          description: "Instance {{ $labels.instance }} has not delivered a Gateway heartbeat for more than two minutes."
+
+      - alert: OpenClawObservatoryDown
+        expr: up{job="openclaw-observatory"} == 0
+        for: 1m
+        labels: { severity: critical }
+        annotations:
+          summary: OpenClaw Observatory cannot be scraped
+          description: "Prometheus has been unable to scrape the Observatory metrics endpoint for one minute."
+
       - alert: OpenClawHighMemory
         expr: openclaw_process_resident_memory_bytes > 2147483648
         for: 10m

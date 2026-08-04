@@ -188,13 +188,37 @@ export function patchDashboardCosts(data, pricing = getPricing()) {
     }
   }
 
-  // Patch agent stats — recompute from LLM data or sum model costs per agent
+  // Patch agent×model stats — compute cost per row from token sums
+  if (Array.isArray(data.agentModels)) {
+    for (const row of data.agentModels) {
+      const p = resolvePricing(row.provider, row.model, pricing);
+      if (p) {
+        const inputT = Number(row.inputTokens || 0) + Number(row.cacheReadTokens || 0);
+        const outputT = Number(row.outputTokens || 0);
+        const cacheWriteT = Number(row.cacheWriteTokens || 0);
+        row.costUsd = inputT * p.input + outputT * p.output + cacheWriteT * p.input;
+      }
+    }
+  }
+
+  // Patch agent stats — compute cost from patched model stats using weighted avg cost-per-token
   if (Array.isArray(data.agents) && Array.isArray(data.models)) {
-    // Agent stats already have token breakdowns, compute cost
-    for (const a of data.agents) {
-      const p = resolvePricing(a.provider || a.agentId, a.model, pricing);
-      // Agent stats may not have provider/model, so we compute from sum of llmCalls
-      // We skip agent-level patching here and rely on the model/call level patches
+    // Compute total cost and total tokens from already-patched model stats
+    let modelTotalCost = 0;
+    let modelTotalInputTokens = 0;
+    let modelTotalOutputTokens = 0;
+    for (const m of data.models) {
+      modelTotalCost += Number(m.costUsd || 0);
+      modelTotalInputTokens += Number(m.inputTokens || 0) + Number(m.cacheReadTokens || 0);
+      modelTotalOutputTokens += Number(m.outputTokens || 0);
+    }
+    const modelAllTokens = modelTotalInputTokens + modelTotalOutputTokens;
+    if (modelAllTokens > 0) {
+      const avgCostPerToken = modelTotalCost / modelAllTokens;
+      for (const a of data.agents) {
+        const agentTokens = Number(a.inputTokens || 0) + Number(a.cacheReadTokens || 0) + Number(a.outputTokens || 0) + Number(a.cacheWriteTokens || 0);
+        a.costUsd = agentTokens * avgCostPerToken;
+      }
     }
   }
 
@@ -208,6 +232,31 @@ export function patchDashboardCosts(data, pricing = getPricing()) {
         row.costUsd = inputT * p.input + outputT * p.output;
       }
     }
+  }
+
+  // Patch 30d cost trends and compute Today / Week / Month
+  if (Array.isArray(data.costTrends30d)) {
+    for (const row of data.costTrends30d) {
+      const p = resolvePricing(row.provider, row.model, pricing);
+      if (p) {
+        const inputT = Number(row.inputTokens || 0);
+        const outputT = Number(row.outputTokens || 0);
+        row.costUsd = inputT * p.input + outputT * p.output;
+      }
+    }
+    // Aggregate by period (date string)
+    const byPeriod = {};
+    for (const row of data.costTrends30d) {
+      const period = row.period;
+      if (!byPeriod[period]) byPeriod[period] = 0;
+      byPeriod[period] += Number(row.costUsd || 0);
+    }
+    const periods = Object.keys(byPeriod).sort();
+    const todayStr = new Date().toISOString().slice(0, 10);
+    data.costSummary = data.costSummary || {};
+    data.costSummary.lastDayCost = byPeriod[todayStr] || 0;
+    data.costSummary.lastWeekCost = periods.slice(-7).reduce((sum, p) => sum + byPeriod[p], 0);
+    data.costSummary.lastMonthCost = periods.slice(-30).reduce((sum, p) => sum + byPeriod[p], 0);
   }
 
   // Patch cost summary — recompute totals

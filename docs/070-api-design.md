@@ -9,7 +9,8 @@ SSE. The default listener is the local web proxy; the backend listens on
 | Method/path | Description |
 | --- | --- |
 | `GET /health` | Process liveness |
-| `GET /ready` | Database/listener readiness |
+| `GET /ready` | SQLite write-transaction readiness and latest event delay |
+| `GET /api/v1/dashboard` | Composite dashboard data in one request |
 | `GET /metrics` | Prometheus text format |
 | `GET /api/v1/status` | Daemon/Gateway/storage summary |
 | `GET /api/v1/instances` | Instances |
@@ -72,8 +73,8 @@ are `500`.
 ```json
 {
   "apiVersion":3,
-  "schemaVersion":5,
-  "capabilities":["agent-stats-v3","session-waterfall-v3","timeseries-v3","dashboard-config-v3","disk-space-v3"],
+  "schemaVersion":6,
+  "capabilities":["agent-stats-v3","timeseries-v3","trace-span-v6","anomaly-signals-v6","cost-attribution-v6"],
   "buildId":"20260710T130000Z-abc1234",
   "daemon":{"ready":true,"version":"0.3.0"},
   "gateway":{"up":true,"instanceId":"local-abc123","pid":10207},

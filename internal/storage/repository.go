@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zylcold/openclaw-observatory/internal/event"
@@ -16,8 +18,51 @@ import (
 )
 
 type Repository struct {
-	db   *sql.DB
-	path string
+	db           *sql.DB
+	readDB       *sql.DB
+	path         string
+	writeMetrics writeMetrics
+}
+
+type writeMetrics struct {
+	mu            sync.Mutex
+	insertSeconds float64
+	insertCount   uint64
+	reduceSeconds float64
+	reduceCount   uint64
+	commitSeconds float64
+	commitCount   uint64
+	querySeconds  float64
+	queryCount    uint64
+}
+
+// WriteMetricsSnapshot holds process-lifetime write timings for Prometheus.
+// Times are measured around database operations, including failed attempts.
+type WriteMetricsSnapshot struct {
+	InsertSeconds float64
+	InsertCount   uint64
+	ReduceSeconds float64
+	ReduceCount   uint64
+	CommitSeconds float64
+	CommitCount   uint64
+	QuerySeconds  float64
+	QueryCount    uint64
+}
+
+// PoolStats exposes database/sql queueing without changing SQLite's single
+// writer connection policy. WaitDuration is cumulative time spent waiting for
+// that connection, not query execution time.
+type PoolStats struct {
+	OpenConnections int
+	InUse           int
+	WaitCount       int64
+	WaitDuration    time.Duration
+}
+
+// Readiness describes the storage checks used by the daemon readiness probe.
+type Readiness struct {
+	LastEventReceivedAt *time.Time
+	EventDelay          time.Duration
 }
 
 type InsertResult struct {
@@ -31,6 +76,10 @@ type ProcessRef struct {
 	ProcessID  int    `json:"processId"`
 }
 
+// insertBatchSize bounds how long a single SQLite write transaction holds the
+// database lock. Larger requests are split while preserving event order.
+const insertBatchSize = 50
+
 func Open(path string) (*Repository, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -41,7 +90,7 @@ func Open(path string) (*Repository, error) {
 	}
 	db.SetMaxOpenConns(1)
 	for _, pragma := range []string{
-		"PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=5000", "PRAGMA synchronous=NORMAL",
+		"PRAGMA journal_mode=WAL", "PRAGMA foreign_keys=ON", "PRAGMA busy_timeout=30000", "PRAGMA synchronous=NORMAL",
 	} {
 		if _, err := db.Exec(pragma); err != nil {
 			db.Close()
@@ -59,13 +108,35 @@ func Open(path string) (*Repository, error) {
 	for _, migration := range []struct {
 		version int
 		sql     string
-	}{{2, schemaV2}, {3, schemaV3}, {4, schemaV4}, {5, schemaV5}} {
+	}{{2, schemaV2}, {3, schemaV3}, {4, schemaV4}, {5, schemaV5}, {6, schemaV6}, {7, schemaV7}, {8, schemaV8}} {
 		if err := applyMigration(db, migration.version, migration.sql); err != nil {
 			db.Close()
 			return nil, err
 		}
 	}
-	return &Repository{db: db, path: path}, nil
+	readDB, err := openReadDB(path)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Repository{db: db, readDB: readDB, path: path}, nil
+}
+
+func openReadDB(path string) (*sql.DB, error) {
+	uri := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}).String()
+	db, err := sql.Open("sqlite", uri)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	for _, pragma := range []string{"PRAGMA query_only=ON", "PRAGMA busy_timeout=2000"} {
+		if _, err := db.Exec(pragma); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("initialize readonly sqlite connection: %s: %w", pragma, err)
+		}
+	}
+	return db, nil
 }
 
 func applyMigration(db *sql.DB, version int, statements string) error {
@@ -90,9 +161,122 @@ func applyMigration(db *sql.DB, version int, statements string) error {
 	return tx.Commit()
 }
 
-func (r *Repository) Close() error { return r.db.Close() }
+func (r *Repository) Close() error {
+	var firstErr error
+	if r.readDB != nil && r.readDB != r.db {
+		firstErr = r.readDB.Close()
+	}
+	if err := r.db.Close(); firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
+}
+
+// ReadOnly returns the dedicated, bounded read connection. It shares the WAL
+// snapshot with the writer but cannot mutate the database.
+func (r *Repository) ReadOnly() *Repository {
+	if r.readDB == nil {
+		return r
+	}
+	return &Repository{db: r.readDB, path: r.path}
+}
 
 func (r *Repository) Ping(ctx context.Context) error { return r.db.PingContext(ctx) }
+
+// Readiness verifies that SQLite can acquire a write transaction and reports
+// the age of the most recently received event. BEGIN IMMEDIATE does not change
+// data, but it fails for read-only databases and unavailable write locks.
+func (r *Repository) Readiness(ctx context.Context) (Readiness, error) {
+	conn, err := r.db.Conn(ctx)
+	if err != nil {
+		return Readiness{}, err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return Readiness{}, fmt.Errorf("acquire SQLite write transaction: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, "ROLLBACK"); err != nil {
+		return Readiness{}, fmt.Errorf("release SQLite write transaction: %w", err)
+	}
+
+	var receivedAt sql.NullString
+	if err := conn.QueryRowContext(ctx, `SELECT MAX(received_at) FROM events`).Scan(&receivedAt); err != nil {
+		return Readiness{}, err
+	}
+	if !receivedAt.Valid || receivedAt.String == "" {
+		return Readiness{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, receivedAt.String)
+	if err != nil {
+		return Readiness{}, fmt.Errorf("parse latest event timestamp: %w", err)
+	}
+	delay := time.Since(parsed)
+	if delay < 0 {
+		delay = 0
+	}
+	return Readiness{LastEventReceivedAt: &parsed, EventDelay: delay}, nil
+}
+
+func (r *Repository) WriteMetrics() WriteMetricsSnapshot {
+	r.writeMetrics.mu.Lock()
+	defer r.writeMetrics.mu.Unlock()
+	return WriteMetricsSnapshot{
+		InsertSeconds: r.writeMetrics.insertSeconds,
+		InsertCount:   r.writeMetrics.insertCount,
+		ReduceSeconds: r.writeMetrics.reduceSeconds,
+		ReduceCount:   r.writeMetrics.reduceCount,
+		CommitSeconds: r.writeMetrics.commitSeconds,
+		CommitCount:   r.writeMetrics.commitCount,
+		QuerySeconds:  r.writeMetrics.querySeconds,
+		QueryCount:    r.writeMetrics.queryCount,
+	}
+}
+
+func (r *Repository) PoolStats() PoolStats {
+	return poolStats(r.db)
+}
+
+func (r *Repository) ReadPoolStats() PoolStats {
+	if r.readDB == nil {
+		return r.PoolStats()
+	}
+	return poolStats(r.readDB)
+}
+
+func poolStats(db *sql.DB) PoolStats {
+	stats := db.Stats()
+	return PoolStats{
+		OpenConnections: stats.OpenConnections,
+		InUse:           stats.InUse,
+		WaitCount:       stats.WaitCount,
+		WaitDuration:    stats.WaitDuration,
+	}
+}
+
+func (r *Repository) recordWriteTiming(stage string, elapsed time.Duration) {
+	r.writeMetrics.mu.Lock()
+	defer r.writeMetrics.mu.Unlock()
+	switch stage {
+	case "insert":
+		r.writeMetrics.insertSeconds += elapsed.Seconds()
+		r.writeMetrics.insertCount++
+	case "reduce":
+		r.writeMetrics.reduceSeconds += elapsed.Seconds()
+		r.writeMetrics.reduceCount++
+	case "commit":
+		r.writeMetrics.commitSeconds += elapsed.Seconds()
+		r.writeMetrics.commitCount++
+	case "query":
+		r.writeMetrics.querySeconds += elapsed.Seconds()
+		r.writeMetrics.queryCount++
+	}
+}
+
+// RecordQueryDuration records end-to-end API query time for daemon health
+// metrics. It intentionally has no labels to keep cardinality bounded.
+func (r *Repository) RecordQueryDuration(elapsed time.Duration) {
+	r.recordWriteTiming("query", elapsed)
+}
 
 func (r *Repository) SchemaVersion(ctx context.Context) (int, error) {
 	var version int
@@ -102,16 +286,32 @@ func (r *Repository) SchemaVersion(ctx context.Context) (int, error) {
 
 func (r *Repository) InsertEvents(ctx context.Context, events []event.Event) (InsertResult, error) {
 	result := InsertResult{Accepted: len(events)}
+	for start := 0; start < len(events); start += insertBatchSize {
+		end := min(start+insertBatchSize, len(events))
+		batch, err := r.insertBatch(ctx, events[start:end])
+		result.Duplicates += batch.Duplicates
+		result.Inserted = append(result.Inserted, batch.Inserted...)
+		if err != nil {
+			return result, err
+		}
+	}
+	return result, nil
+}
+
+func (r *Repository) insertBatch(ctx context.Context, events []event.Event) (InsertResult, error) {
+	result := InsertResult{Accepted: len(events)}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err
 	}
 	defer tx.Rollback()
 	for _, e := range events {
+		started := time.Now()
 		res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO events
       (event_id,schema_version,event_type,occurred_at,instance_id,producer_id,process_id,sequence,source,payload_json,received_at)
       VALUES(?,?,?,?,?,?,?,?,?,?,?)`, e.EventID, e.SchemaVersion, e.EventType, timestamp(e.OccurredAt), e.InstanceID,
 			e.ProducerID, e.ProcessID, e.Sequence, e.Source, string(e.Payload), timestamp(time.Now()))
+		r.recordWriteTiming("insert", time.Since(started))
 		if err != nil {
 			return result, err
 		}
@@ -120,14 +320,20 @@ func (r *Repository) InsertEvents(ctx context.Context, events []event.Event) (In
 			result.Duplicates++
 			continue
 		}
+		started = time.Now()
 		if err := reduce(ctx, tx, e); err != nil {
+			r.recordWriteTiming("reduce", time.Since(started))
 			return result, fmt.Errorf("reduce %s: %w", e.EventType, err)
 		}
+		r.recordWriteTiming("reduce", time.Since(started))
 		result.Inserted = append(result.Inserted, e)
 	}
+	started := time.Now()
 	if err := tx.Commit(); err != nil {
+		r.recordWriteTiming("commit", time.Since(started))
 		return result, err
 	}
+	r.recordWriteTiming("commit", time.Since(started))
 	return result, nil
 }
 
@@ -180,15 +386,17 @@ func reduce(ctx context.Context, tx *sql.Tx, e event.Event) error {
 			return nil
 		}
 		status := statusFor(e.EventType)
-		_, err := tx.ExecContext(ctx, `INSERT INTO agent_runs(instance_id,run_id,session_id,agent_id,provider,model,channel,trigger,status,started_at,ended_at,duration_ms,error_category)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,run_id) DO UPDATE SET
+		_, err := tx.ExecContext(ctx, `INSERT INTO agent_runs(instance_id,run_id,session_id,agent_id,provider,model,channel,trigger,status,started_at,ended_at,duration_ms,error_category,trace_id,span_id,parent_span_id)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,run_id) DO UPDATE SET
 		session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),provider=COALESCE(NULLIF(excluded.provider,''),provider),
 		agent_id=COALESCE(NULLIF(excluded.agent_id,''),agent_id),
 		model=COALESCE(NULLIF(excluded.model,''),model),channel=COALESCE(NULLIF(excluded.channel,''),channel),trigger=COALESCE(NULLIF(excluded.trigger,''),trigger),
         status=CASE WHEN excluded.status='active' AND status!='unknown' THEN status ELSE excluded.status END,
-        started_at=COALESCE(started_at,excluded.started_at),ended_at=COALESCE(excluded.ended_at,ended_at),duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category)`,
+        started_at=COALESCE(started_at,excluded.started_at),ended_at=COALESCE(excluded.ended_at,ended_at),duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category),
+        trace_id=COALESCE(NULLIF(excluded.trace_id,''),trace_id),span_id=COALESCE(NULLIF(excluded.span_id,''),span_id),parent_span_id=COALESCE(NULLIF(excluded.parent_span_id,''),parent_span_id)`,
 			e.InstanceID, id, event.String(p, "sessionId"), event.String(p, "agentId"), event.String(p, "provider"), event.String(p, "model"), event.String(p, "channel"), event.String(p, "trigger"), status,
-			nullTime(e.EventType == "agent.started", t), nullTime(e.EventType != "agent.started", t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"))
+			nullTime(e.EventType == "agent.started", t), nullTime(e.EventType != "agent.started", t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"),
+			event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"))
 		return err
 	case "llm.started", "llm.completed", "llm.failed":
 		id := event.String(p, "callId")
@@ -199,16 +407,32 @@ func reduce(ctx context.Context, tx *sql.Tx, e event.Event) error {
 			return nil
 		}
 		status := statusFor(e.EventType)
-		_, err := tx.ExecContext(ctx, `INSERT INTO llm_calls(instance_id,call_id,run_id,session_id,provider,model,status,started_at,ended_at,duration_ms,error_category,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost_usd)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,call_id) DO UPDATE SET
+		_, err := tx.ExecContext(ctx, `INSERT INTO llm_calls(instance_id,call_id,run_id,session_id,provider,model,status,started_at,ended_at,duration_ms,error_category,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost_usd,
+        trace_id,span_id,parent_span_id,time_to_first_byte_ms,time_to_first_token_ms,generation_duration_ms,stop_reason,attempt,retry_reason,request_bytes,response_bytes)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,call_id) DO UPDATE SET
         run_id=COALESCE(NULLIF(excluded.run_id,''),run_id),session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),provider=COALESCE(NULLIF(excluded.provider,''),provider),model=COALESCE(NULLIF(excluded.model,''),model),
         status=CASE WHEN excluded.status='active' AND status!='unknown' THEN status ELSE excluded.status END,started_at=COALESCE(started_at,excluded.started_at),ended_at=COALESCE(excluded.ended_at,ended_at),
         duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category),
         input_tokens=MAX(input_tokens,excluded.input_tokens),output_tokens=MAX(output_tokens,excluded.output_tokens),cache_read_tokens=MAX(cache_read_tokens,excluded.cache_read_tokens),
-        cache_write_tokens=MAX(cache_write_tokens,excluded.cache_write_tokens),cost_usd=MAX(cost_usd,excluded.cost_usd)`,
+        cache_write_tokens=MAX(cache_write_tokens,excluded.cache_write_tokens),cost_usd=MAX(cost_usd,excluded.cost_usd),
+        estimated_cost_usd=0,pricing_source=NULL,
+        trace_id=COALESCE(NULLIF(excluded.trace_id,''),trace_id),span_id=COALESCE(NULLIF(excluded.span_id,''),span_id),parent_span_id=COALESCE(NULLIF(excluded.parent_span_id,''),parent_span_id),
+        time_to_first_byte_ms=COALESCE(excluded.time_to_first_byte_ms,time_to_first_byte_ms),time_to_first_token_ms=COALESCE(excluded.time_to_first_token_ms,time_to_first_token_ms),
+        generation_duration_ms=COALESCE(excluded.generation_duration_ms,generation_duration_ms),stop_reason=COALESCE(NULLIF(excluded.stop_reason,''),stop_reason),
+        attempt=MAX(attempt,excluded.attempt),retry_reason=COALESCE(NULLIF(excluded.retry_reason,''),retry_reason),
+        request_bytes=COALESCE(excluded.request_bytes,request_bytes),response_bytes=COALESCE(excluded.response_bytes,response_bytes)`,
 			e.InstanceID, id, event.String(p, "runId"), event.String(p, "sessionId"), event.String(p, "provider"), event.String(p, "model"), status,
 			nullTime(e.EventType == "llm.started", t), nullTime(e.EventType != "llm.started", t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"),
-			event.Float(p, "inputTokens"), event.Float(p, "outputTokens"), event.Float(p, "cacheReadTokens"), event.Float(p, "cacheWriteTokens"), event.Float(p, "costUsd"))
+			event.Float(p, "inputTokens"), event.Float(p, "outputTokens"), event.Float(p, "cacheReadTokens"), event.Float(p, "cacheWriteTokens"), event.Float(p, "costUsd"),
+			event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"),
+			nullFloat(p, "timeToFirstByteMs"), nullFloat(p, "timeToFirstTokenMs"), nullFloat(p, "generationDurationMs"), event.String(p, "stopReason"),
+			positiveInt(p, "attempt", 1), event.String(p, "retryReason"), nullInt(p, "requestPayloadBytes"), nullInt(p, "responseStreamBytes"))
+		return err
+	case "llm.retried":
+		_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO retry_events(event_id,instance_id,session_id,run_id,trace_id,span_id,parent_span_id,from_provider,from_model,to_provider,to_model,attempt,reason,occurred_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, e.EventID, e.InstanceID, event.String(p, "sessionId"), event.String(p, "runId"),
+			event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"), event.String(p, "fromProvider"),
+			event.String(p, "fromModel"), event.String(p, "toProvider"), event.String(p, "toModel"), positiveInt(p, "attempt", 1), event.String(p, "reason"), t)
 		return err
 	case "tool.started", "tool.completed", "tool.failed":
 		return reduceTool(ctx, tx, e, p, t, false)
@@ -223,11 +447,14 @@ func reduce(ctx context.Context, tx *sql.Tx, e event.Event) error {
 			return nil
 		}
 		status := statusFor(e.EventType)
-		_, err := tx.ExecContext(ctx, `INSERT INTO subagent_runs(instance_id,subagent_id,parent_run_id,child_session_hash,agent_id,mode,provider,model,status,started_at,ended_at,outcome)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,subagent_id) DO UPDATE SET parent_run_id=COALESCE(NULLIF(excluded.parent_run_id,''),parent_run_id),
-        child_session_hash=COALESCE(NULLIF(excluded.child_session_hash,''),child_session_hash),status=excluded.status,started_at=COALESCE(started_at,excluded.started_at),ended_at=COALESCE(excluded.ended_at,ended_at),outcome=COALESCE(NULLIF(excluded.outcome,''),outcome)`,
+		_, err := tx.ExecContext(ctx, `INSERT INTO subagent_runs(instance_id,subagent_id,parent_run_id,child_session_hash,agent_id,mode,provider,model,status,started_at,ended_at,outcome,trace_id,span_id,parent_span_id)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,subagent_id) DO UPDATE SET parent_run_id=COALESCE(NULLIF(excluded.parent_run_id,''),parent_run_id),
+        child_session_hash=COALESCE(NULLIF(excluded.child_session_hash,''),child_session_hash),status=CASE WHEN excluded.status='active' AND status!='unknown' THEN status ELSE excluded.status END,
+        started_at=COALESCE(started_at,excluded.started_at),ended_at=COALESCE(excluded.ended_at,ended_at),outcome=COALESCE(NULLIF(excluded.outcome,''),outcome),
+        trace_id=COALESCE(NULLIF(excluded.trace_id,''),trace_id),span_id=COALESCE(NULLIF(excluded.span_id,''),span_id),parent_span_id=COALESCE(NULLIF(excluded.parent_span_id,''),parent_span_id)`,
 			e.InstanceID, id, event.String(p, "parentRunId"), event.String(p, "childSessionHash"), event.String(p, "agentId"), event.String(p, "mode"), event.String(p, "provider"), event.String(p, "model"), status,
-			nullTime(e.EventType == "subagent.started", t), nullTime(e.EventType != "subagent.started", t), event.String(p, "outcome"))
+			nullTime(e.EventType == "subagent.started", t), nullTime(e.EventType != "subagent.started", t), event.String(p, "outcome"),
+			event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"))
 		return err
 	case "resource.sampled":
 		_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO resource_samples(event_id,instance_id,process_id,sampled_at,cpu_seconds_total,resident_memory_bytes,virtual_memory_bytes,threads,open_fds,read_bytes,write_bytes,disk_total_bytes,disk_available_bytes)
@@ -252,7 +479,8 @@ func applyRunUsageUpdate(ctx context.Context, tx *sql.Tx, instanceID string, p m
 	model := event.String(p, "model")
 	_, err := tx.ExecContext(ctx, `UPDATE llm_calls SET
       input_tokens=MAX(input_tokens,?),output_tokens=MAX(output_tokens,?),cache_read_tokens=MAX(cache_read_tokens,?),
-      cache_write_tokens=MAX(cache_write_tokens,?),cost_usd=MAX(cost_usd,?)
+      cache_write_tokens=MAX(cache_write_tokens,?),cost_usd=MAX(cost_usd,?),
+      estimated_cost_usd=0,pricing_source=NULL
       WHERE rowid=(SELECT rowid FROM llm_calls WHERE instance_id=? AND run_id=?
         AND (?='' OR provider=?) AND (?='' OR model=?)
         ORDER BY COALESCE(ended_at,started_at) DESC LIMIT 1)`,
@@ -270,20 +498,28 @@ func reduceTool(ctx context.Context, tx *sql.Tx, e event.Event, p map[string]any
 	status := statusFor(e.EventType)
 	started := strings.HasSuffix(e.EventType, ".started")
 	if mcp {
-		_, err := tx.ExecContext(ctx, `INSERT INTO mcp_calls(instance_id,call_id,run_id,session_id,tool_name,owner,status,started_at,ended_at,duration_ms,error_category)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,call_id) DO UPDATE SET run_id=COALESCE(NULLIF(excluded.run_id,''),run_id),session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),
-      tool_name=COALESCE(NULLIF(excluded.tool_name,''),tool_name),owner=COALESCE(NULLIF(excluded.owner,''),owner),status=excluded.status,started_at=COALESCE(started_at,excluded.started_at),
-      ended_at=COALESCE(excluded.ended_at,ended_at),duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category)`,
+		_, err := tx.ExecContext(ctx, `INSERT INTO mcp_calls(instance_id,call_id,run_id,session_id,tool_name,owner,status,started_at,ended_at,duration_ms,error_category,trace_id,span_id,parent_span_id,attempt,retry_reason)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,call_id) DO UPDATE SET run_id=COALESCE(NULLIF(excluded.run_id,''),run_id),session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),
+      tool_name=COALESCE(NULLIF(excluded.tool_name,''),tool_name),owner=COALESCE(NULLIF(excluded.owner,''),owner),
+      status=CASE WHEN excluded.status='active' AND status!='unknown' THEN status ELSE excluded.status END,started_at=COALESCE(started_at,excluded.started_at),
+      ended_at=COALESCE(excluded.ended_at,ended_at),duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category),
+      trace_id=COALESCE(NULLIF(excluded.trace_id,''),trace_id),span_id=COALESCE(NULLIF(excluded.span_id,''),span_id),parent_span_id=COALESCE(NULLIF(excluded.parent_span_id,''),parent_span_id),
+      attempt=MAX(attempt,excluded.attempt),retry_reason=COALESCE(NULLIF(excluded.retry_reason,''),retry_reason)`,
 			e.InstanceID, id, event.String(p, "runId"), event.String(p, "sessionId"), event.String(p, "toolName"), event.String(p, "toolOwner"), status,
-			nullTime(started, t), nullTime(!started, t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"))
+			nullTime(started, t), nullTime(!started, t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"),
+			event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"), positiveInt(p, "attempt", 1), event.String(p, "retryReason"))
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO tool_calls(instance_id,tool_call_id,run_id,session_id,tool_name,tool_source,tool_owner,status,started_at,ended_at,duration_ms,error_category)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,tool_call_id) DO UPDATE SET run_id=COALESCE(NULLIF(excluded.run_id,''),run_id),session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),
+	_, err := tx.ExecContext(ctx, `INSERT INTO tool_calls(instance_id,tool_call_id,run_id,session_id,tool_name,tool_source,tool_owner,status,started_at,ended_at,duration_ms,error_category,trace_id,span_id,parent_span_id,attempt,retry_reason)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,tool_call_id) DO UPDATE SET run_id=COALESCE(NULLIF(excluded.run_id,''),run_id),session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),
     tool_name=COALESCE(NULLIF(excluded.tool_name,''),tool_name),tool_source=COALESCE(NULLIF(excluded.tool_source,''),tool_source),tool_owner=COALESCE(NULLIF(excluded.tool_owner,''),tool_owner),
-    status=excluded.status,started_at=COALESCE(started_at,excluded.started_at),ended_at=COALESCE(excluded.ended_at,ended_at),duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category)`,
+    status=CASE WHEN excluded.status='active' AND status!='unknown' THEN status ELSE excluded.status END,started_at=COALESCE(started_at,excluded.started_at),
+    ended_at=COALESCE(excluded.ended_at,ended_at),duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category),
+    trace_id=COALESCE(NULLIF(excluded.trace_id,''),trace_id),span_id=COALESCE(NULLIF(excluded.span_id,''),span_id),parent_span_id=COALESCE(NULLIF(excluded.parent_span_id,''),parent_span_id),
+    attempt=MAX(attempt,excluded.attempt),retry_reason=COALESCE(NULLIF(excluded.retry_reason,''),retry_reason)`,
 		e.InstanceID, id, event.String(p, "runId"), event.String(p, "sessionId"), event.String(p, "toolName"), event.String(p, "toolSource"), event.String(p, "toolOwner"), status,
-		nullTime(started, t), nullTime(!started, t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"))
+		nullTime(started, t), nullTime(!started, t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"),
+		event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"), positiveInt(p, "attempt", 1), event.String(p, "retryReason"))
 	return err
 }
 
@@ -308,6 +544,19 @@ func nullFloat(m map[string]any, key string) any {
 		return nil
 	}
 	return event.Float(m, key)
+}
+func nullInt(m map[string]any, key string) any {
+	if _, ok := m[key]; !ok {
+		return nil
+	}
+	return int64(event.Float(m, key))
+}
+func positiveInt(m map[string]any, key string, fallback int64) int64 {
+	n := int64(event.Float(m, key))
+	if n <= 0 {
+		return fallback
+	}
+	return n
 }
 func timestamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
@@ -337,7 +586,7 @@ func (r *Repository) DBSize() int64 {
 }
 
 func (r *Repository) Count(ctx context.Context, table string) (int64, error) {
-	allowed := map[string]bool{"events": true, "sessions": true, "agent_runs": true, "subagent_runs": true, "llm_calls": true, "tool_calls": true, "mcp_calls": true, "resource_samples": true}
+	allowed := map[string]bool{"events": true, "sessions": true, "agent_runs": true, "subagent_runs": true, "llm_calls": true, "tool_calls": true, "mcp_calls": true, "retry_events": true, "resource_samples": true}
 	if !allowed[table] {
 		return 0, errors.New("invalid table")
 	}

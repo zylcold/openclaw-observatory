@@ -26,10 +26,11 @@
     <div id="app"></div>
     <script type="module" src="/src/main.js"></script>
     <script>
+      // Unregister any existing service worker to prevent stale cache issues
       if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js').catch(() => {});
-        });
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+          for (var reg of regs) reg.unregister();
+        }).catch(function(){});
       }
     </script>
   </body>

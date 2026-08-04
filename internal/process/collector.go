@@ -26,10 +26,14 @@ type Sink func(context.Context, []event.Event) error
 type Collector struct {
 	repo       *storage.Repository
 	sink       Sink
+	sampleFn   func(context.Context, int) (map[string]any, error)
 	producerID string
 	sequence   atomic.Uint64
 	interval   time.Duration
+	failures   map[string]int
 }
+
+const samplingFailureThreshold = 3
 
 var (
 	clockTicksOnce sync.Once
@@ -37,7 +41,7 @@ var (
 )
 
 func NewCollector(repo *storage.Repository, interval time.Duration, sink Sink) *Collector {
-	return &Collector{repo: repo, sink: sink, producerID: "daemon-" + event.NewID(), interval: interval}
+	return &Collector{repo: repo, sink: sink, sampleFn: sample, producerID: "daemon-" + event.NewID(), interval: interval, failures: make(map[string]int)}
 }
 
 func (c *Collector) Run(ctx context.Context) {
@@ -60,13 +64,21 @@ func (c *Collector) collect(ctx context.Context) {
 		return
 	}
 	for _, ref := range refs {
-		s, err := sample(ctx, ref.ProcessID)
+		s, err := c.sampleFn(ctx, ref.ProcessID)
 		if err != nil {
 			if !alive(ref.ProcessID) {
 				_ = c.sink(ctx, []event.Event{c.newEvent("gateway.crashed", ref, map[string]any{"reason": "process_missing"})})
+				delete(c.failures, ref.InstanceID)
+				continue
+			}
+			c.failures[ref.InstanceID]++
+			if c.failures[ref.InstanceID] >= samplingFailureThreshold {
+				_ = c.sink(ctx, []event.Event{c.newEvent("gateway.crashed", ref, map[string]any{"reason": "sampling_failed", "failureCount": c.failures[ref.InstanceID]})})
+				delete(c.failures, ref.InstanceID)
 			}
 			continue
 		}
+		delete(c.failures, ref.InstanceID)
 		_ = c.sink(ctx, []event.Event{c.newEvent("resource.sampled", ref, s)})
 	}
 }

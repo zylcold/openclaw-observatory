@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { access } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { request } from "node:http";
 import { join } from "node:path";
@@ -33,6 +34,8 @@ export class Forwarder {
     this.socketPath = config.socketPath || join(homedir(), ".openclaw-observatory", "observatory.sock");
     this.capacity = config.queueCapacity || 10_000;
     this.flushIntervalMs = config.flushIntervalMs || 250;
+    this.requestTimeoutMs = config.requestTimeoutMs || 5_000;
+    this.forceFlushTimeoutMs = config.forceFlushTimeoutMs || 250;
     this.logger = logger;
     this.instanceId = `local-${hash(`${hostname()}|${homedir()}`)}`;
     this.producerId = `plugin-${randomUUID()}`;
@@ -86,6 +89,13 @@ export class Forwarder {
         candidate = this.queue.findIndex((entry) => entry.priority === p);
       }
       if (candidate < 0) {
+        // A terminal lifecycle event is more valuable than the configured
+        // in-memory limit. Keep it for the next daemon recovery rather than
+        // losing the only record of a completed/crashed run.
+        if (incomingPriority === PRIORITY.critical) {
+          this.queue.push({ event, body, bytes: Buffer.byteLength(body), priority: incomingPriority });
+          return true;
+        }
         this.recordDrop("queue_full");
         return false;
       }
@@ -117,34 +127,50 @@ export class Forwarder {
       sessionKeyHash: this.sessionKeyHash(evt.sessionKey), provider: cleanString(evt.provider, 128),
       model: cleanString(evt.model, 256), channel: cleanString(evt.channel, 64),
       agentId: cleanString(evt.agentId, 128) || agentIdFromSessionKey(evt.sessionKey),
+      traceId: cleanString(evt.traceId) || cleanString(evt.runId) || cleanString(evt.sessionId),
     };
+    const runTrace = {
+      ...base,
+      spanId: cleanString(evt.spanId) || cleanString(evt.runId),
+      parentSpanId: cleanString(evt.parentSpanId),
+    };
+    const callTrace = (id) => ({
+      ...base,
+      spanId: cleanString(evt.spanId) || cleanString(id),
+      parentSpanId: cleanString(evt.parentSpanId) || cleanString(evt.runId),
+      attempt: Number.isFinite(evt.attempt) ? evt.attempt : undefined,
+      retryReason: cleanString(evt.retryReason, 128),
+    });
     switch (evt.type) {
       case "run.started":
-        this.enqueue("agent.started", { ...base, trigger: cleanString(evt.trigger, 64) }, "normal", evt.ts); break;
+        this.enqueue("agent.started", { ...runTrace, trigger: cleanString(evt.trigger, 64) }, "normal", evt.ts); break;
       case "run.completed":
         this.enqueue(evt.outcome === "completed" ? "agent.completed" : "agent.failed", {
-          ...base, trigger: cleanString(evt.trigger, 64), durationMs: evt.durationMs,
+          ...runTrace, trigger: cleanString(evt.trigger, 64), durationMs: evt.durationMs,
           outcome: cleanString(evt.outcome, 32), errorCategory: cleanString(evt.errorCategory, 64),
         }, "critical", evt.ts); break;
       case "model.call.started": {
-        const value = { ...base, callId: cleanString(evt.callId), api: cleanString(evt.api, 64), transport: cleanString(evt.transport, 64) };
+        const value = { ...callTrace(evt.callId), callId: cleanString(evt.callId), api: cleanString(evt.api, 64), transport: cleanString(evt.transport, 64) };
         this.rememberCall(evt, value, "active"); this.enqueue("llm.started", value, "normal", evt.ts); break;
       }
       case "model.call.completed":
       case "model.call.error": {
         const failed = evt.type.endsWith("error");
-        const value = { ...base, callId: cleanString(evt.callId), api: cleanString(evt.api, 64), transport: cleanString(evt.transport, 64),
+        const value = { ...callTrace(evt.callId), callId: cleanString(evt.callId), api: cleanString(evt.api, 64), transport: cleanString(evt.transport, 64),
           durationMs: evt.durationMs, errorCategory: cleanString(evt.errorCategory, 64), failureKind: cleanString(evt.failureKind, 64),
-          requestPayloadBytes: evt.requestPayloadBytes, responseStreamBytes: evt.responseStreamBytes, timeToFirstByteMs: evt.timeToFirstByteMs };
+          requestPayloadBytes: evt.requestPayloadBytes, responseStreamBytes: evt.responseStreamBytes,
+          timeToFirstByteMs: evt.timeToFirstByteMs, timeToFirstTokenMs: evt.timeToFirstTokenMs,
+          generationDurationMs: evt.generationDurationMs, stopReason: cleanString(evt.stopReason, 64) };
         this.rememberCall(evt, value, failed ? "failed" : "completed"); this.enqueue(failed ? "llm.failed" : "llm.completed", value, "critical", evt.ts); break;
       }
       case "model.usage": {
         this.mapUsage(evt); break;
       }
       case "model.failover":
-        this.enqueue("llm.retried", { sessionId: base.sessionId, sessionKeyHash: base.sessionKeyHash,
+        this.enqueue("llm.retried", { ...callTrace(evt.callId), sessionKeyHash: base.sessionKeyHash,
           fromProvider: cleanString(evt.fromProvider,128), fromModel: cleanString(evt.fromModel,256),
-          toProvider: cleanString(evt.toProvider,128), toModel: cleanString(evt.toModel,256), reason: cleanString(evt.reason,64),
+          toProvider: cleanString(evt.toProvider,128), toModel: cleanString(evt.toModel,256),
+          reason: cleanString(evt.reason,128), attempt: Number.isFinite(evt.attempt) ? evt.attempt : 1,
         }, "normal", evt.ts); break;
       case "tool.execution.started":
       case "tool.execution.completed":
@@ -153,14 +179,15 @@ export class Forwarder {
         const suffix = evt.type.split(".").at(-1); const terminal = suffix !== "started";
         const family = evt.toolSource === "mcp" ? "mcp" : "tool";
         const state = suffix === "started" ? "started" : suffix === "completed" ? "completed" : "failed";
-        this.enqueue(`${family}.${state}`, { ...base, toolCallId: cleanString(evt.toolCallId) || `event-${evt.seq}`,
+        const toolCallId = cleanString(evt.toolCallId) || `event-${evt.seq}`;
+        this.enqueue(`${family}.${state}`, { ...callTrace(toolCallId), toolCallId,
           toolName: cleanString(evt.toolName,128) || "unknown", toolSource: cleanString(evt.toolSource,32),
           toolOwner: cleanString(evt.toolOwner,128), durationMs: evt.durationMs,
           errorCategory: cleanString(evt.errorCategory,64) || (suffix === "blocked" ? "blocked" : undefined),
         }, terminal ? "critical" : "normal", evt.ts); break;
       }
       case "diagnostic.heartbeat":
-        this.enqueue("gateway.heartbeat", { active: evt.active, waiting: evt.waiting, queued: evt.queued, queueDepth: this.queue.length }, "low", evt.ts); break;
+        this.enqueue("gateway.heartbeat", { active: evt.active, waiting: evt.waiting, queued: evt.queued, queueDepth: this.queue.length, queueCapacity: this.capacity }, "low", evt.ts); break;
       case "diagnostic.async_queue.dropped":
         this.enqueue("monitor.events_dropped", { count: evt.droppedEvents, reason: "openclaw_diagnostic_queue", queueDepth: evt.queueLength }, "critical", evt.ts); break;
     }
@@ -225,11 +252,26 @@ export class Forwarder {
     const batch = this.queue.slice(0, count); const body = `[${batch.map((x) => x.body).join(",")}]`;
     this.inflight = true;
     try {
-      await this.post(body, force ? 250 : 1500);
+      if (!await this.socketAvailable()) {
+        this.scheduleRetry();
+        return false;
+      }
+      await this.post(body, force ? this.forceFlushTimeoutMs : this.requestTimeoutMs);
       this.queue.splice(0, count); this.failureCount = 0; this.nextAttemptAt = 0; this.maybeQueueDropNotice(); return true;
     } catch {
-      this.failureCount++; this.nextAttemptAt = Date.now() + Math.min(5000, 250 * 2 ** Math.min(this.failureCount, 5)); return false;
+      this.scheduleRetry(); return false;
     } finally { this.inflight = false; }
+  }
+
+  async socketAvailable() {
+    try { await access(this.socketPath); return true; } catch { return false; }
+  }
+
+  scheduleRetry() {
+    this.failureCount++;
+    const ceiling = Math.min(30_000, 250 * 2 ** Math.min(this.failureCount - 1, 7));
+    const jittered = Math.floor(ceiling * (0.5 + Math.random() * 0.5));
+    this.nextAttemptAt = Date.now() + jittered;
   }
 
   post(body, timeoutMs) {

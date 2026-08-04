@@ -108,7 +108,7 @@ flowchart LR
 | 守护进程 | `cmd/observatoryd`, `internal/` | 接收、校验、去重、归约、持久化、采样，并在 `:10087` 提供 API |
 | 事件契约 | `schemas/` | Draft 2020-12 信封和载荷限制 |
 | 本地 Dashboard | `web/`、`cmd/observatory-web` | Vite 构建的独立 UI，通过同源代理访问 API/SSE |
-| 监控栈 | `deploy/` | 可选的 Prometheus 和 Grafana 部署 |
+| 监控栈 | `deploy/` | 可选 Prometheus 与远端 Grafana Dashboard 源文件 |
 
 ## 快速开始
 
@@ -154,15 +154,22 @@ curl http://127.0.0.1:10086/metrics
 
 插件启用后，OpenClaw 还会发现 `openclaw-observatory` Skill 和只读 `observatory_query` 工具。Agent 可以通过 localhost 服务回答诸如"检查 OpenClaw 是否健康"、"显示最近的失败工具调用"或"解释内存趋势"等请求，无需直接访问 SQLite。该工具固定连接 `127.0.0.1:10086`，仅使用 GET 请求，有查询大小上限，不能重启服务或修改数据。
 
-## 可选的 Prometheus 和 Grafana
+## Prometheus 与远端 Grafana
 
-此部分为可选项，本地服务安装不使用。如果运维人员需要在容器中运行 Prometheus/Grafana，先将指标监听器暴露到受信任的 Docker 可达地址，然后运行：
+项目不部署本地 Grafana，Dashboard 统一由远端
+<https://grafana.yunlongzhu.com> 管理。Compose 文件只启动 Prometheus。
+先将指标监听器暴露到受信任的 Docker 可达地址，然后运行：
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-Docker Desktop 会抓取 `host.docker.internal:10086`。Web 服务默认仅绑定 `127.0.0.1`，因此容器抓取是显式开启的：仅在受信任的宿主防火墙后使用 `observatory-web --listen 0.0.0.0:10086` 启动，或直接在宿主上运行 Prometheus。REST API 包含本地运维标识符，不得暴露到不受信任的网络。
+Docker Desktop 中的 Prometheus 会抓取 `host.docker.internal:10086`。Web 服务默认仅绑定 `127.0.0.1`，因此容器抓取是显式开启的：仅在受信任的宿主防火墙后使用 `observatory-web --listen 0.0.0.0:10086` 启动，或直接在宿主上运行 Prometheus。REST API 包含本地运维标识符，不得暴露到不受信任的网络。
+
+受版本控制的 Dashboard 位于
+`deploy/grafana/dashboards/openclaw-overview.json`。通过 Grafana HTTP API
+并使用 `GRAFANA_TOKEN` 上传，令牌不得提交到仓库。Dashboard 使用 Prometheus
+datasource 变量，使所有面板统一跟随所选远端 datasource，不依赖本地 UID。
 
 ## API 概览
 

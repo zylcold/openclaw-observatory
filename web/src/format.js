@@ -10,4 +10,29 @@ export const bytes = (value) => {
   if (amount >= 1048576) return `${(amount / 1048576).toFixed(1)} MiB`;
   return `${num(amount)} B`;
 };
-export const shortTime = (value) => new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+const _hourFmt = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit" });
+const _fullFmt = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+
+// Compact time label for chart axes and table cells.
+// When rangeMs is provided and ≤ 24h, only show HH:MM (no date prefix).
+let _currentRangeMs = Infinity;
+export function setShortTimeRange(rangeMs) { _currentRangeMs = rangeMs || Infinity; }
+export const shortTime = (value) => {
+  const d = new Date(value);
+  return _currentRangeMs <= 86400000 ? _hourFmt.format(d) : _fullFmt.format(d);
+};
+export const fullShortTime = (value) => _fullFmt.format(new Date(value));
+
+// Format a cost-trend period string (YYYY-MM-DD, YYYY-WNN, or YYYY-MM) into a compact label.
+const _monthFmt = new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" });
+const _monthYearFmt = new Intl.DateTimeFormat("zh-CN", { month: "short", year: "numeric" });
+export const periodLabel = (period) => {
+  var s = String(period || "");
+  // YYYY-MM-DD → e.g. "7月21日"
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return _monthFmt.format(new Date(s + "T00:00:00"));
+  // YYYY-WNN → "W28"
+  if (/^\d{4}-W\d{2}$/.test(s)) return s.slice(5);
+  // YYYY-MM → "2026年7月"
+  if (/^\d{4}-\d{2}$/.test(s)) return _monthYearFmt.format(new Date(s + "-01T00:00:00"));
+  return s;
+};

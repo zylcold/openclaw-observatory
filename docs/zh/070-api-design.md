@@ -7,7 +7,8 @@
 | 方法/路径 | 描述 |
 | --- | --- |
 | `GET /health` | 进程存活 |
-| `GET /ready` | 数据库/监听器就绪 |
+| `GET /ready` | SQLite 写事务就绪状态和最近事件延迟 |
+| `GET /api/v1/dashboard` | 单次请求返回组合 Dashboard 数据 |
 | `GET /metrics` | Prometheus 文本格式 |
 | `GET /api/v1/status` | 守护进程/Gateway/存储摘要 |
 | `GET /api/v1/instances` | 实例列表 |
@@ -65,8 +66,8 @@
 ```json
 {
   "apiVersion":3,
-  "schemaVersion":5,
-  "capabilities":["agent-stats-v3","session-waterfall-v3","timeseries-v3","dashboard-config-v3","disk-space-v3"],
+  "schemaVersion":6,
+  "capabilities":["agent-stats-v3","timeseries-v3","trace-span-v6","anomaly-signals-v6","cost-attribution-v6"],
   "buildId":"20260710T130000Z-abc1234",
   "daemon":{"ready":true,"version":"0.3.0"},
   "gateway":{"up":true,"instanceId":"local-abc123","pid":10207},

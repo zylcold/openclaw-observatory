@@ -148,7 +148,114 @@ daemon outage does not interrupt the run.
 
 ---
 
-## Phase 5 — Advanced Observability
+## Phase 5 — v0.5 Stability & Resilience 🚧
+
+> Focus: prevent data loss during daemon/plugin restart, recover gracefully from
+> network hiccups, and harden against edge-case crashes.
+
+### 5.1 Plugin → Daemon Reconnection
+
+**Current gaps:**
+- Forwarder connects to daemon via Unix socket; flush failure uses exponential backoff (250ms → 5s) but has no connection health check — it POSTs blindly after backoff
+- `post()` timeouts are hardcoded at 250ms (force) and 1500ms; under daemon load this may cause false negatives
+- When the queue fills during daemon outage, events are dropped (`queue_full`); critical events (`gateway.started/stopped`, `session.completed`) are not protected
+
+**Plan:**
+- [x] Probe socket connectivity (`fs.access` or `connect` check) before flush to avoid wasteful POSTs
+- [x] Raise exponential backoff ceiling to 30s with jitter; fast-recover when daemon comes back
+- [x] Critical event protection: when queue is full, drop lowest-priority events first; never drop `critical` priority events (`gateway.started/stopped`, `session.completed`)
+- [x] Report queue depth via heartbeat events; daemon logs backpressure warnings based on `queueDepth`
+- [x] Add configurable `queueCapacity` plugin option to allow tuning the queue limit
+
+### 5.2 Daemon Crash Prevention & Recovery
+
+**Current gaps:**
+- Daemon crash relies on LaunchAgent restart; no crash diagnostics or self-healing
+- SQLite WAL mode is safe, but abnormal exit may leave stale `-wal`/`-shm` sidecar files
+- `main.go` exits on any HTTP server error via `errCh`; no recovery attempt
+- Resource sampling (`ps`/`lsof`) failures are silently ignored — cannot distinguish daemon issues from OS problems
+
+**Plan:**
+- [ ] On startup, detect and clean up stale SQLite lock files (`.db-wal`, `.db-shm`)
+- [x] HTTP server fatal error recovery: retry listen on transient errors (exclude bind conflicts)
+- [x] Runtime crash output: write unhandled panic/fatal-error dumps to `logs/` with goroutine stacks
+- [x] Enhanced health check: `/ready` validates SQLite writability and recent event latency
+- [x] Process sampling error tracking: consecutive failure counter; after N failures, emit `gateway.crashed`
+
+### 5.3 Data Write Hardening
+
+**Current gaps:**
+- `InsertEvents` runs insert + reduce in a single transaction; large batches hold the lock long
+- `PRAGMA busy_timeout=5000` is only 5s; concurrent queries may hit SQLITE_BUSY
+- `SetMaxOpenConns(1)` is required for SQLite single-writer but lacks connection health checks
+- Retention purge uses row-by-row DELETE inside a transaction; slow for large datasets
+- No write audit trail
+
+**Plan:**
+- [x] Raise `busy_timeout` to 30s to accommodate long-running queries
+- [x] Batch splitting: when a single batch exceeds 50 events, split into smaller transactions to reduce lock hold time
+- [x] Retention DELETE: use chunked deletion (`WHERE rowid IN (SELECT rowid FROM ... LIMIT 1000)`) instead of full-table scan
+- [ ] Periodic VACUUM after retention job (off-peak, throttled)
+- [x] Write performance metrics: expose `INSERT OR IGNORE` duration, reduce duration, commit duration to `/metrics`
+- [ ] Optional write audit log (`--audit-log` flag): record accepted/duplicates/errors per batch
+
+### 5.4 Frontend Offline Recovery
+
+**Current gaps:**
+- SSE `onerror` simply closes + reconnects after 5s; no distinction between network error, server 503, or clean shutdown
+- `loadDashboard` uses bare `fetch()` with no timeout, retry, or AbortController
+- When daemon is unreachable, the page shows blank/error with no friendly offline state
+- Background auto-refresh retries at fixed intervals after failure with no backoff
+
+**Plan:**
+- [x] SSE reconnect with exponential backoff (1s → 2s → 4s → ... → 30s); reset on successful connect
+- [x] SSE `onerror` checks `readyState`: CLOSED = reconnect, CONNECTING = wait
+- [x] `fetch()` with AbortController + 10s timeout; retry once on timeout
+- [x] Offline banner: show "Reconnecting..." status bar when daemon is unreachable; auto-dismiss on recovery
+- [x] Background refresh backoff: double interval after 3 consecutive failures, cap at 60s
+- [x] `navigator.onLine` listener: pause refresh when offline, trigger immediately on online
+- [x] Data caching: keep last successful dashboard data on fetch failure (show "data may be stale" indicator)
+
+### 5.5 Performance Optimization
+
+**Current gaps:**
+- `/agents/stats` uses 3 CTEs + multiple JOINs; may be slow with 30d range and large datasets
+- `/timeseries` aggregates per bucket using `strftime`; up to 2000 buckets means 2000 `strftime` calls
+- `agentStats` query `tool_events` CTE is a UNION ALL without pushdown filters — full table scan risk
+- Resource sampling spawns `ps` + `lsof` subprocesses every 5s; `lsof` is slow on macOS
+- Frontend sends 12 parallel fetch requests per dashboard load
+
+**Plan:**
+- [ ] `timeseries` optimization: precompute bucket boundaries, replace `strftime` with `CASE WHEN` expressions
+- [x] `agent_stats`: push time-range filters into CTEs to reduce JOIN intermediate rows
+- [ ] Replace `lsof` with faster FD counting (macOS: `proc_info` syscall; Linux: `/proc/<pid>/fd` readdir)
+- [x] Add statement timeout for long-running queries (SQLite `busy_timeout` does not cover this)
+- [x] Frontend: merge dashboard APIs into composite `/api/v1/dashboard` endpoint (single round-trip for KPIs + chart data)
+- [x] SQLite query plan analysis: run `EXPLAIN QUERY PLAN` on critical queries and establish baselines
+
+### 5.6 Monitoring & Alerting
+
+**Current gaps:**
+- `/metrics` exposes Prometheus format but has no built-in alert rules
+- No daemon self-health metrics (event latency, queue backlog, query latency)
+- Logging is `slog` to stderr only; no structured log file rotation
+
+**Plan:**
+- [x] New Prometheus metrics: `openclaw_monitor_insert_duration_seconds`, `openclaw_monitor_queue_depth`, `openclaw_monitor_query_duration_seconds`
+- [x] Log rotation: write `slog` output to `logs/observatoryd-YYYY-MM-DD.log`, daily rotation, 7-day retention
+- [x] Built-in alert thresholds: event queue > 80% capacity → WARN, insert latency > 1s → WARN
+- [x] `status` API returns `eventQueueDepth`, `lastEventReceivedAt`, `dbSizeBytes`
+
+**Exit criteria:**
+- Zero critical event loss after daemon crash + restart
+- Frontend reconnects and displays data within 5s of network recovery
+- 30d `agents/stats` query completes in < 500ms
+- Database write metrics exposed via `/metrics`
+
+
+---
+
+## Phase 6 — Advanced Observability
 
 - Metadata-only session replay;
 - OpenTelemetry trace export and correlation;

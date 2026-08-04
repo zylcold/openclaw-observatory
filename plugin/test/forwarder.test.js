@@ -14,12 +14,64 @@ test("maps diagnostics without prompt or tool content", () => {
   assert.equal(JSON.stringify(event).includes("secret"), false);
 });
 
+test("maps stable trace spans, retry metadata and LLM timing without content", () => {
+  const f = new Forwarder({ queueCapacity: 100 });
+  f.mapDiagnostic({
+    type: "model.call.completed", ts: Date.now(), runId: "run-1", sessionId: "session-1", callId: "call-1",
+    provider: "openai", model: "gpt", attempt: 2, retryReason: "rate_limit",
+    timeToFirstTokenMs: 120, generationDurationMs: 800, stopReason: "stop",
+    prompt: "private prompt", response: "private response",
+  });
+  const payload = f.queue[0].event.payload;
+  assert.equal(payload.traceId, "run-1");
+  assert.equal(payload.spanId, "call-1");
+  assert.equal(payload.parentSpanId, "run-1");
+  assert.equal(payload.attempt, 2);
+  assert.equal(payload.timeToFirstTokenMs, 120);
+  assert.equal(payload.generationDurationMs, 800);
+  assert.equal(JSON.stringify(payload).includes("private"), false);
+
+  f.mapDiagnostic({
+    type: "model.failover", ts: Date.now(), runId: "run-1", sessionId: "session-1",
+    callId: "retry-1", fromModel: "a", toModel: "b", attempt: 2, reason: "rate_limit",
+  });
+  assert.equal(f.queue[1].event.eventType, "llm.retried");
+  assert.equal(f.queue[1].event.payload.spanId, "retry-1");
+  assert.equal(f.queue[1].event.payload.reason, "rate_limit");
+});
+
 test("drops low priority first when full", () => {
   const f = new Forwarder({ queueCapacity: 100 });
   for (let i = 0; i < 100; i++) f.enqueue("gateway.heartbeat", { i }, "low");
   assert.equal(f.enqueue("gateway.stopped", {}, "critical"), true);
   assert.equal(f.queue.length, 100);
   assert.equal(f.queue.at(-1).event.eventType, "gateway.stopped");
+});
+
+test("retains critical events when the queue only contains critical events", () => {
+  const f = new Forwarder({ queueCapacity: 3 });
+  for (let i = 0; i < 3; i++) f.enqueue("session.completed", { i }, "critical");
+  assert.equal(f.enqueue("gateway.stopped", {}, "critical"), true);
+  assert.equal(f.queue.length, 4);
+  assert.equal(f.queue.at(-1).event.eventType, "gateway.stopped");
+});
+
+test("probes the socket before posting and backs off with jitter", async () => {
+  const f = new Forwarder({ queueCapacity: 100 });
+  f.enqueue("gateway.heartbeat", {}, "low");
+  f.socketAvailable = async () => false;
+  f.post = () => assert.fail("post should not run when socket probe fails");
+  const before = Date.now();
+  assert.equal(await f.flush(), false);
+  assert.equal(f.failureCount, 1);
+  assert.ok(f.nextAttemptAt >= before + 125 && f.nextAttemptAt <= before + 250);
+});
+
+test("caps retry backoff at 30 seconds", () => {
+  const f = new Forwarder();
+  for (let i = 0; i < 20; i++) f.scheduleRetry();
+  const delay = f.nextAttemptAt - Date.now();
+  assert.ok(delay >= 15_000 && delay <= 30_000);
 });
 
 test("hashes session keys", () => {

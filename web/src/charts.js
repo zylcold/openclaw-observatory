@@ -1,9 +1,14 @@
 import {
-  Chart, ArcElement, BarController, BarElement, CategoryScale, DoughnutController, Filler,
-  Legend, LinearScale, LineController, LineElement, PointElement, ScatterController, Tooltip,
+  Chart, ArcElement, BarController, BarElement, BubbleController, CategoryScale, DoughnutController, Filler,
+  Legend, LinearScale, LineController, LineElement, PieController, PointElement,
+  PolarAreaController, RadarController, RadialLinearScale, ScatterController, Tooltip,
 } from "chart.js";
 
-Chart.register(ArcElement, BarController, BarElement, CategoryScale, DoughnutController, Filler, Legend, LinearScale, LineController, LineElement, PointElement, ScatterController, Tooltip);
+Chart.register(
+  ArcElement, BarController, BarElement, BubbleController, CategoryScale, DoughnutController, Filler, Legend,
+  LinearScale, LineController, LineElement, PieController, PointElement, PolarAreaController,
+  RadarController, RadialLinearScale, ScatterController, Tooltip,
+);
 Chart.defaults.font.family = "Inter, ui-sans-serif, system-ui, -apple-system, sans-serif";
 Chart.defaults.animation.duration = 250;
 Chart.defaults.responsive = true;
@@ -36,7 +41,12 @@ function make(id, config) {
   const c = colors();
   const options = config.options || {};
   options.plugins = { legend: { labels: { color: c.text, boxWidth: 10, usePointStyle: true } }, tooltip: { intersect: false }, ...(options.plugins || {}) };
-  options.scales = Object.fromEntries(Object.entries(options.scales || {}).map(([key, scale]) => [key, { grid: { color: c.grid }, ticks: { color: c.text, maxTicksLimit: 8 }, ...scale }]));
+  options.scales = Object.fromEntries(Object.entries(options.scales || {}).map(([key, scale]) => {
+    const isX = key === "x";
+    const merged = { grid: { color: c.grid }, ticks: { color: c.text, maxTicksLimit: isX ? 10 : 8 }, ...scale };
+    if (merged.ticks) merged.ticks.maxTicksLimit = merged.ticks.maxTicksLimit || (isX ? 10 : 8);
+    return [key, merged];
+  }));
   active.set(id, new Chart(canvas, { ...config, options }));
 }
 
@@ -44,6 +54,14 @@ export const lineChart = (id, labels, datasets, options = {}) => make(id, { type
 export const comboChart = (id, labels, datasets, options = {}) => make(id, { type: "bar", data: { labels, datasets }, options: { interaction: { mode: "index", intersect: false }, ...options } });
 export const doughnutChart = (id, labels, values) => make(id, { type: "doughnut", data: { labels, datasets: [{ data: values, backgroundColor: palette, borderWidth: 0 }] }, options: { cutout: "68%", plugins: { legend: { position: "bottom" } } } });
 export const scatterChart = (id, datasets) => make(id, { type: "scatter", data: { datasets }, options: { parsing: false, scales: { x: { title: { display: true, text: "Token" } }, y: { title: { display: true, text: "延迟 ms" } } } } });
+export const customChart = (id, requestedType, data, options = {}) => {
+  const type = ["area", "stepLine", "cumulativeLine", "stackedArea"].includes(requestedType)
+    ? "line"
+    : ["horizontalBar", "stackedBar", "combo", "waterfall", "histogram"].includes(requestedType)
+      ? "bar"
+      : requestedType === "gauge" ? "doughnut" : requestedType;
+  return make(id, { type, data, options });
+};
 
 // --- Incremental update helpers (no destroy/re-create flicker) ---
 

@@ -8,6 +8,11 @@ Prompt, command, and error-message values are forbidden as labels.
 | Metric | Type | Allowed labels |
 | --- | --- | --- |
 | `openclaw_gateway_up` | gauge | `instance` |
+| `openclaw_gateway_responsive` | gauge | `instance` |
+| `openclaw_gateway_response_duration_seconds` | gauge | `instance` |
+| `openclaw_gateway_probe_consecutive_failures` | gauge | `instance` |
+| `openclaw_gateway_probe_last_success_unixtime` | gauge | `instance` |
+| `openclaw_gateway_heartbeat_age_seconds` | gauge | `instance` |
 | `openclaw_gateway_uptime_seconds` | gauge | `instance` |
 | `openclaw_gateway_restarts_total` | counter | `instance` |
 | `openclaw_sessions_active` | gauge | `instance` |
@@ -32,6 +37,10 @@ Prompt, command, and error-message values are forbidden as labels.
 | `openclaw_monitor_events_received_total` | counter | `instance,event_type` |
 | `openclaw_monitor_events_dropped_total` | counter | `instance,reason` |
 | `openclaw_monitor_event_queue_depth` | gauge | `instance` |
+| `openclaw_monitor_insert_duration_seconds` | summary | none |
+| `openclaw_monitor_reduce_duration_seconds` | summary | none |
+| `openclaw_monitor_commit_duration_seconds` | summary | none |
+| `openclaw_monitor_query_duration_seconds` | summary | none |
 
 Durations are seconds, storage is bytes, ratios range from 0–1, and counters end
 in `_total`. Histogram implementations expose `_bucket`, `_sum`, and `_count`.
@@ -44,8 +53,14 @@ a monitor drop/error counter rather than growing without limit.
 ## PromQL examples
 
 ```promql
-# Gateway availability
-min_over_time(openclaw_gateway_up[5m])
+# Gateway application responsiveness (detects a live process that is hung)
+min_over_time(openclaw_gateway_responsive[5m])
+
+# Gateway active health-check latency
+max_over_time(openclaw_gateway_response_duration_seconds[5m])
+
+# Gateway telemetry freshness
+max(openclaw_gateway_heartbeat_age_seconds)
 
 # Agent run P95
 histogram_quantile(0.95,
