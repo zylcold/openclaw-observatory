@@ -10,20 +10,20 @@ function query(params = {}) {
   return q.size ? `?${q}` : "";
 }
 
-async function get(path, params) {
+async function get(path, params = {}, { timeoutMs = 10_000, attempts = 2 } = {}) {
   const url = `${API}${path}${query(params)}`;
   let lastError;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10_000);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     try {
       response = await fetch(url, { headers: { Accept: "application/json" }, signal: controller.signal });
     } catch (error) {
       clearTimeout(timeout);
       if (error?.name === "AbortError") {
-        lastError = new Error("请求超时（10 秒）");
-        if (attempt === 0) continue;
+        lastError = new Error(`请求超时（${Math.ceil(timeoutMs / 1000)} 秒）`);
+        if (attempt + 1 < attempts) continue;
         throw lastError;
       }
       throw error;
@@ -37,7 +37,7 @@ async function get(path, params) {
       body = JSON.parse(text);
     } catch {
       // JSON parse failed (truncated body, connection dropped mid-response, etc.)
-      if (attempt === 0) {
+      if (attempt + 1 < attempts) {
         lastError = new Error("响应解析失败，正在重试…");
         continue;
       }
@@ -56,10 +56,14 @@ async function get(path, params) {
 }
 
 export async function loadDashboard(filters) {
-  const data = await get("/dashboard", { ...filters, limit: 200 });
+  // Snapshot requests return a bounded, cached response. An immediate retry
+  // would only create another client wait while the server is already merging it.
+  const data = await get("/dashboard/snapshot", { ...filters, limit: 200 }, { timeoutMs: 8_000, attempts: 1 });
   // Patch costs using cached pricing data (computed from token counts)
   patchDashboardCosts(data, getPricing());
   return data;
 }
+
+export const loadSummary = () => get("/summary", {}, { timeoutMs: 750, attempts: 1 });
 
 export const loadSession = (sessionId) => get(`/sessions/${encodeURIComponent(sessionId)}`);

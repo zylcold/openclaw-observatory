@@ -22,6 +22,8 @@ export function shell({
   const gatewayProbe = data?.status?.gatewayProbe;
   const gatewayUp = instances.some((x) => x.status === "up") && (!gatewayProbe?.lastProbedAt || gatewayProbe.responsive !== false);
   const compatible = !data || (data.status?.apiVersion === 3 && data.status?.capabilities?.includes("timeseries-v3"));
+  const degraded = Object.entries(data?.degraded || {}).filter(([name]) => name !== "dashboard");
+  const snapshotWarming = data?.degraded?.dashboard === "warming";
   const domain = observabilityDomain(activeDomain);
   const charts = chartsForDomain(config.customCharts, domain.id);
   const favorites = domain.id === "overview" ? favoriteCharts(config.customCharts) : [];
@@ -62,6 +64,8 @@ export function shell({
     </nav>
     ${!compatible ? `<div class="banner">前后端版本不匹配：面板需要 API v3 / timeseries-v3。</div>` : ""}
     ${connectionLost ? `<div class="banner">正在重连…${dataStale ? " 当前显示的数据可能已过期。" : ""}</div>` : ""}
+    ${snapshotWarming ? `<div class="banner">正在生成首个图表快照；健康摘要已就绪。</div>` : ""}
+    ${degraded.length ? `<div class="banner">${degraded.length} 个图表模块暂用最近成功快照或空结果，后台会继续刷新。</div>` : ""}
     <main>
       <div class="page-title"><div><span class="page-kicker">${esc(domain.label)} · ${esc(domain.phase)}</span><h1>${esc(domain.name)}</h1><p>${esc(domain.description)} · ${filters.range.toUpperCase()}　${filters.instanceId ? '实例 ' + esc(filters.instanceId) + ' · ' : ''}${filters.agentId ? 'Agent ' + esc(filters.agentId) + ' · ' : ''}${fmtLocal(filters.from, filters.range)} — ${fmtLocal(filters.to, filters.range)}</p></div><div class="page-actions"><button id="custom-chart-create" class="create-chart-button"><span>＋</span>创建图表</button><button id="refresh">${loading ? "刷新中…" : "立即刷新"}</button></div></div>
       ${contextualFilters}

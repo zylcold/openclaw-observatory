@@ -1,6 +1,6 @@
 package storage
 
-const CurrentSchemaVersion = 7
+const CurrentSchemaVersion = 8
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -289,4 +289,11 @@ CREATE INDEX IF NOT EXISTS idx_retry_session_time ON retry_events(instance_id,se
 const schemaV7 = `
 ALTER TABLE llm_calls ADD COLUMN estimated_cost_usd REAL NOT NULL DEFAULT 0;
 ALTER TABLE llm_calls ADD COLUMN pricing_source TEXT;
+`
+
+// schemaV8 is supported by the real global 24-hour resource trend plan. The
+// prior composite index only helps when instance_id is supplied; the default
+// dashboard range has no instance filter and otherwise scans every sample.
+const schemaV8 = `
+CREATE INDEX IF NOT EXISTS idx_resources_time ON resource_samples(sampled_at);
 `
