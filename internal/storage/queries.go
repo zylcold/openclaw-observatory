@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // PageResult wraps a list query result with pagination metadata.
@@ -484,6 +485,40 @@ func (r *Repository) LLMUsageForCostMetrics(ctx context.Context) ([]LLMUsageMetr
 	  LEFT JOIN agent_runs ar ON ar.instance_id=l.instance_id AND ar.run_id=l.run_id
 	  GROUP BY l.instance_id,COALESCE(NULLIF(ar.agent_id,''),'unknown'),
 	    COALESCE(NULLIF(l.provider,''),'unknown'),COALESCE(NULLIF(l.model,''),'unknown')`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []LLMUsageMetricRow
+	for rows.Next() {
+		var row LLMUsageMetricRow
+		if err := rows.Scan(&row.InstanceID, &row.AgentID, &row.Provider, &row.Model, &row.ReportedCost,
+			&row.MissingInput, &row.MissingOutput, &row.MissingCacheRead, &row.MissingCacheWrite); err != nil {
+			return nil, err
+		}
+		result = append(result, row)
+	}
+	return result, rows.Err()
+}
+
+// LLMUsageForCostMetricsSince is the bounded-time counterpart used for rolling
+// gauges. It remains read-only so metrics collection never creates a write.
+func (r *Repository) LLMUsageForCostMetricsSince(ctx context.Context, since time.Time) ([]LLMUsageMetricRow, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT
+	    l.instance_id,
+	    COALESCE(NULLIF(ar.agent_id,''),'unknown'),
+	    COALESCE(NULLIF(l.provider,''),'unknown'),
+	    COALESCE(NULLIF(l.model,''),'unknown'),
+	    SUM(CASE WHEN l.cost_usd > 0 THEN l.cost_usd ELSE l.estimated_cost_usd END),
+	    SUM(CASE WHEN l.cost_usd <= 0 AND l.estimated_cost_usd <= 0 THEN l.input_tokens ELSE 0 END),
+	    SUM(CASE WHEN l.cost_usd <= 0 AND l.estimated_cost_usd <= 0 THEN l.output_tokens ELSE 0 END),
+	    SUM(CASE WHEN l.cost_usd <= 0 AND l.estimated_cost_usd <= 0 THEN l.cache_read_tokens ELSE 0 END),
+	    SUM(CASE WHEN l.cost_usd <= 0 AND l.estimated_cost_usd <= 0 THEN l.cache_write_tokens ELSE 0 END)
+	  FROM llm_calls l
+	  LEFT JOIN agent_runs ar ON ar.instance_id=l.instance_id AND ar.run_id=l.run_id
+	  WHERE unixepoch(COALESCE(l.started_at,l.ended_at)) >= unixepoch(?)
+	  GROUP BY l.instance_id,COALESCE(NULLIF(ar.agent_id,''),'unknown'),
+	    COALESCE(NULLIF(l.provider,''),'unknown'),COALESCE(NULLIF(l.model,''),'unknown')`, since.UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, err
 	}

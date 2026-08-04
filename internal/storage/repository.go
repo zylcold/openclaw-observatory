@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 type Repository struct {
 	db           *sql.DB
+	readDB       *sql.DB
 	path         string
 	writeMetrics writeMetrics
 }
@@ -45,6 +47,16 @@ type WriteMetricsSnapshot struct {
 	CommitCount   uint64
 	QuerySeconds  float64
 	QueryCount    uint64
+}
+
+// PoolStats exposes database/sql queueing without changing SQLite's single
+// writer connection policy. WaitDuration is cumulative time spent waiting for
+// that connection, not query execution time.
+type PoolStats struct {
+	OpenConnections int
+	InUse           int
+	WaitCount       int64
+	WaitDuration    time.Duration
 }
 
 // Readiness describes the storage checks used by the daemon readiness probe.
@@ -96,13 +108,35 @@ func Open(path string) (*Repository, error) {
 	for _, migration := range []struct {
 		version int
 		sql     string
-	}{{2, schemaV2}, {3, schemaV3}, {4, schemaV4}, {5, schemaV5}, {6, schemaV6}, {7, schemaV7}} {
+	}{{2, schemaV2}, {3, schemaV3}, {4, schemaV4}, {5, schemaV5}, {6, schemaV6}, {7, schemaV7}, {8, schemaV8}} {
 		if err := applyMigration(db, migration.version, migration.sql); err != nil {
 			db.Close()
 			return nil, err
 		}
 	}
-	return &Repository{db: db, path: path}, nil
+	readDB, err := openReadDB(path)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &Repository{db: db, readDB: readDB, path: path}, nil
+}
+
+func openReadDB(path string) (*sql.DB, error) {
+	uri := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}).String()
+	db, err := sql.Open("sqlite", uri)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	for _, pragma := range []string{"PRAGMA query_only=ON", "PRAGMA busy_timeout=2000"} {
+		if _, err := db.Exec(pragma); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("initialize readonly sqlite connection: %s: %w", pragma, err)
+		}
+	}
+	return db, nil
 }
 
 func applyMigration(db *sql.DB, version int, statements string) error {
@@ -127,7 +161,25 @@ func applyMigration(db *sql.DB, version int, statements string) error {
 	return tx.Commit()
 }
 
-func (r *Repository) Close() error { return r.db.Close() }
+func (r *Repository) Close() error {
+	var firstErr error
+	if r.readDB != nil && r.readDB != r.db {
+		firstErr = r.readDB.Close()
+	}
+	if err := r.db.Close(); firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
+}
+
+// ReadOnly returns the dedicated, bounded read connection. It shares the WAL
+// snapshot with the writer but cannot mutate the database.
+func (r *Repository) ReadOnly() *Repository {
+	if r.readDB == nil {
+		return r
+	}
+	return &Repository{db: r.readDB, path: r.path}
+}
 
 func (r *Repository) Ping(ctx context.Context) error { return r.db.PingContext(ctx) }
 
@@ -177,6 +229,27 @@ func (r *Repository) WriteMetrics() WriteMetricsSnapshot {
 		CommitCount:   r.writeMetrics.commitCount,
 		QuerySeconds:  r.writeMetrics.querySeconds,
 		QueryCount:    r.writeMetrics.queryCount,
+	}
+}
+
+func (r *Repository) PoolStats() PoolStats {
+	return poolStats(r.db)
+}
+
+func (r *Repository) ReadPoolStats() PoolStats {
+	if r.readDB == nil {
+		return r.PoolStats()
+	}
+	return poolStats(r.readDB)
+}
+
+func poolStats(db *sql.DB) PoolStats {
+	stats := db.Stats()
+	return PoolStats{
+		OpenConnections: stats.OpenConnections,
+		InUse:           stats.InUse,
+		WaitCount:       stats.WaitCount,
+		WaitDuration:    stats.WaitDuration,
 	}
 }
 
