@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -44,6 +45,68 @@ func TestStatusAdvertisesFrontendCompatibility(t *testing.T) {
 	}
 	if len(body.Data.Capabilities) != len(Capabilities) || body.Data.Capabilities[0] != "agent-stats-v3" {
 		t.Fatalf("unexpected capabilities: %#v", body.Data.Capabilities)
+	}
+}
+
+func TestDashboardSnapshotNormalizesLiveRangeAndIgnoresHeartbeatInvalidation(t *testing.T) {
+	repo, err := storage.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	srv := New(repo, slog.Default())
+	handler := srv.PublicHandler()
+
+	anchor := time.Now().UTC().Truncate(30 * time.Second).Add(5 * time.Second)
+	requestFor := func(to time.Time) *httptest.ResponseRecorder {
+		values := url.Values{
+			"from":   {to.Add(-time.Hour).Format(time.RFC3339Nano)},
+			"to":     {to.Format(time.RFC3339Nano)},
+			"bucket": {"1m"},
+		}
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/api/v1/dashboard/snapshot?"+values.Encode(), nil))
+		return res
+	}
+
+	first := requestFor(anchor)
+	if first.Code != http.StatusOK {
+		t.Fatalf("unexpected first snapshot response: %d body=%s", first.Code, first.Body.String())
+	}
+	// The first request may return a bounded warming response on a busy CI host.
+	// Wait briefly for its one background build instead of issuing a duplicate.
+	deadline := time.Now().Add(2 * time.Second)
+	for first.Header().Get("X-Observatory-Dashboard-Cache") == "WARMING" {
+		if time.Now().After(deadline) {
+			t.Fatal("snapshot did not finish its background build")
+		}
+		time.Sleep(25 * time.Millisecond)
+		first = requestFor(anchor)
+	}
+
+	second := requestFor(anchor.Add(5 * time.Second))
+	if got := second.Header().Get("X-Observatory-Dashboard-Cache"); got != "HIT" {
+		t.Fatalf("moving live range missed normalized cache: got %q body=%s", got, second.Body.String())
+	}
+	if err := srv.Insert(t.Context(), []event.Event{{
+		SchemaVersion: 1, EventID: "10000000-0000-4000-8000-000000000777", EventType: "gateway.heartbeat",
+		OccurredAt: time.Now().UTC(), InstanceID: "test", ProducerID: "test", Sequence: 1, Source: "test", Payload: json.RawMessage(`{"queueDepth":1,"queueCapacity":10}`),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	afterHeartbeat := requestFor(anchor.Add(5 * time.Second))
+	if got := afterHeartbeat.Header().Get("X-Observatory-Dashboard-Cache"); got != "HIT" {
+		t.Fatalf("heartbeat should not invalidate dashboard snapshot: got %q", got)
+	}
+	if err := srv.Insert(t.Context(), []event.Event{{
+		SchemaVersion: 1, EventID: "10000000-0000-4000-8000-000000000778", EventType: "resource.sampled",
+		OccurredAt: time.Now().UTC(), InstanceID: "test", ProducerID: "test", Sequence: 2, Source: "daemon", Payload: json.RawMessage(`{"cpuSecondsTotal":1,"residentMemoryBytes":1024,"diskTotalBytes":2048,"diskAvailableBytes":1024}`),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	afterResource := requestFor(anchor.Add(5 * time.Second))
+	if got := afterResource.Header().Get("X-Observatory-Dashboard-Cache"); got != "HIT" {
+		t.Fatalf("resource sample should not invalidate dashboard snapshot: got %q", got)
 	}
 }
 
@@ -225,7 +288,7 @@ func TestReadyChecksSQLiteWriteTransactionAndReportsEventDelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := httptest.NewRecorder()
-	srv.PublicHandler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	srv.PublicHandler().ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/ready/write", nil))
 	if res.Code != http.StatusOK {
 		t.Fatalf("unexpected ready status: %d body=%s", res.Code, res.Body.String())
 	}

@@ -1,5 +1,5 @@
 import "./styles.css";
-import { loadDashboard, loadSession } from "./api.js";
+import { loadDashboard, loadSession, loadSummary } from "./api.js";
 import { loadConfig, resetConfig, saveConfig } from "./config.js";
 import { destroyCharts, setChartAnimation } from "./charts.js";
 import {
@@ -45,12 +45,50 @@ let refreshFailures = 0;
 const domainScrollCache = new Map();
 let streamBackoffMs = 1000;
 let streamReconnectTimer = null;
+let lastDashboardRefreshAt = 0;
+let liveSummary = null;
 
 const INTERACTION_IDLE_MS = 600;
 const FILTER_KEY = "openclaw-observatory-filters-v1";
+const SUMMARY_REFRESH_MS = 15_000;
 
 function interactionActive() {
   return settingsOpen || customBuilder.open || pointerActive || dragActive || Boolean(openSelect?.isConnected) || Date.now() < interactionUntil;
+}
+
+function dashboardRefreshCadence() {
+  if (data?.degraded && Object.keys(data.degraded).length) return 15_000;
+  return ({ "1h": 15_000, "6h": 30_000, "24h": 60_000, "7d": 60_000, "30d": 60_000 })[filters.range] || 60_000;
+}
+
+function mergeLiveSummary(target, summary) {
+  if (!target || !summary) return;
+  const previous = target.status || {};
+  const next = { ...previous, ...summary };
+  if ((!summary.instances || !summary.instances.length) && previous.instances?.length) next.instances = previous.instances;
+  target.status = next;
+}
+
+function updateGatewayIndicator(summary) {
+  const target = document.querySelector(".gateway");
+  if (!target) return;
+  const instances = summary?.instances || [];
+  const probe = summary?.gatewayProbe;
+  const up = instances.some((item) => item.status === "up") && (!probe?.lastProbedAt || probe.responsive !== false);
+  target.innerHTML = `<i class="${up ? "up" : "down"}"></i>${up ? `Gateway responding${probe?.durationSeconds != null ? ` · ${Math.round(probe.durationSeconds * 1000)}ms` : ""}` : "Gateway no response"}`;
+}
+
+async function refreshSummary() {
+  try {
+    const summary = await loadSummary();
+    liveSummary = summary;
+    if (data) {
+      mergeLiveSummary(data, summary);
+      updateGatewayIndicator(data.status);
+    }
+  } catch {
+    // A lightweight health sample must not mark the existing dashboard stale.
+  }
 }
 
 function flushDeferredRender() {
@@ -187,6 +225,13 @@ function incrementalUpdate() {
 async function refresh({ keepRange = false, automatic = false, forceRender = false } = {}) {
   if (loading) return;
   if (automatic && navigator.onLine === false) return;
+  if (automatic && lastDashboardRefreshAt) {
+    const remaining = dashboardRefreshCadence() - (Date.now() - lastDashboardRefreshAt);
+    if (remaining > 0) {
+      schedule(remaining);
+      return;
+    }
+  }
   if (automatic && interactionActive()) {
     schedule(750);
     return;
@@ -203,10 +248,13 @@ async function refresh({ keepRange = false, automatic = false, forceRender = fal
     if (button) button.textContent = "刷新中…";
   }
   try {
+    void refreshSummary();
     data = await loadDashboard({ ...filters, status: viewFilters.status });
+    if (liveSummary) mergeLiveSummary(data, liveSummary);
     connectionLost = false;
     dataStale = false;
     refreshFailures = 0;
+    lastDashboardRefreshAt = Date.now();
     const exists = data.sessions.some((s) => s.sessionId === sessionDetail?.sessionId);
     if (!exists) sessionDetail = data.sessions[0] ? await loadSession(data.sessions[0].sessionId) : null;
   } catch (reason) {
@@ -550,7 +598,16 @@ function connectStream() {
   if (navigator.onLine === false) return;
   const stream = new EventSource("/api/v1/stream");
   stream.onopen = () => { streamBackoffMs = 1000; };
-  stream.addEventListener("monitor-event", () => {
+  stream.addEventListener("monitor-event", (event) => {
+    try {
+      const payload = JSON.parse(event.data);
+      if (payload.eventType === "gateway.heartbeat" || payload.eventType === "resource.sampled") {
+        void refreshSummary();
+        return;
+      }
+    } catch {
+      // Keep the existing debounce path for malformed or older stream events.
+    }
     clearTimeout(streamTimer);
     const refreshFromStream = () => {
       if (interactionActive()) streamTimer = setTimeout(refreshFromStream, 750);
@@ -660,3 +717,6 @@ if (initialSession) {
   requestAnimationFrame(() => scrollDomainNavToActive());
 }
 connectStream();
+setInterval(() => {
+  if (navigator.onLine !== false) void refreshSummary();
+}, SUMMARY_REFRESH_MS);

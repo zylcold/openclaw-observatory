@@ -39,6 +39,28 @@ func TestInsertEventsSplitsLargeBatchesAndAggregatesResults(t *testing.T) {
 	}
 }
 
+func TestReadOnlyRepositoryUsesSeparateNonWritingConnection(t *testing.T) {
+	repo, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	reader := repo.ReadOnly()
+	if reader == repo {
+		t.Fatal("expected a dedicated read repository")
+	}
+	if _, err := repo.InsertEvents(t.Context(), []event.Event{testEvent("10000000-0000-4000-8000-000000000555", "gateway.started", 1, map[string]any{})}); err != nil {
+		t.Fatal(err)
+	}
+	instances, err := reader.ListInstances(t.Context())
+	if err != nil || len(instances) != 1 {
+		t.Fatalf("read connection did not observe committed writer data: instances=%#v err=%v", instances, err)
+	}
+	if _, err := reader.db.ExecContext(t.Context(), `CREATE TABLE should_not_exist (id INTEGER)`); err == nil {
+		t.Fatal("read-only repository unexpectedly allowed a write")
+	}
+}
+
 func TestRecentAnomaliesSupportsEmptyDatabase(t *testing.T) {
 	repo, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

@@ -7,6 +7,7 @@
   <array>
     <string>__BIN__</string>
     <string>--listen</string><string>127.0.0.1:10087</string>
+    <string>--sample-interval</string><string>15s</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

@@ -1,6 +1,6 @@
 package storage
 
-const CurrentSchemaVersion = 8
+const CurrentSchemaVersion = 10
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -291,7 +291,19 @@ ALTER TABLE llm_calls ADD COLUMN estimated_cost_usd REAL NOT NULL DEFAULT 0;
 ALTER TABLE llm_calls ADD COLUMN pricing_source TEXT;
 `
 
+// schemaV8 is supported by the real global 24-hour resource trend plan. The
+// prior composite index only helps when instance_id is supplied; the default
+// dashboard range has no instance filter and otherwise scans every sample.
 const schemaV8 = `
+CREATE INDEX IF NOT EXISTS idx_resources_time ON resource_samples(sampled_at);
+`
+
+// schemaV10 supersedes the pre-merge feature-branch schemaV8 (embedding_calls):
+// schema version 8 was claimed upstream by idx_resources_time (applied
+// 2026-08-04), so the embedding_calls table is re-versioned as v10. A local
+// DB that already recorded the branch's v8 as applied is handled by the
+// bootstrap backfill in repository.go.
+const schemaV10 = `
 CREATE TABLE IF NOT EXISTS embedding_calls (
   instance_id TEXT NOT NULL,
   call_id TEXT NOT NULL,

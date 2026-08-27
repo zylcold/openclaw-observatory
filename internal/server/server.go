@@ -35,6 +35,7 @@ var Capabilities = []string{"agent-stats-v3", "session-waterfall-v3", "timeserie
 
 type Server struct {
 	repo           *storage.Repository
+	analyticsRepo  *storage.Repository
 	hub            *Hub
 	log            *slog.Logger
 	ready          atomic.Bool
@@ -44,6 +45,15 @@ type Server struct {
 	gatewayProbeMu sync.RWMutex
 	gatewayProbe   GatewayProbeSnapshot
 	memory         *memory.Manager
+
+	dashboardCacheMu sync.Mutex
+	dashboardCache   map[string]*dashboardCacheEntry
+	dashboardStats   dashboardCacheStats
+	statusCache      swrResponseCache
+	metricsCache     swrResponseCache
+
+	liveSummaryMu sync.RWMutex
+	liveSummary   liveSummary
 }
 
 type GatewayProbeSnapshot struct {
@@ -56,7 +66,16 @@ type GatewayProbeSnapshot struct {
 }
 
 func New(repo *storage.Repository, logger *slog.Logger) *Server {
-	s := &Server{repo: repo, hub: NewHub(), log: logger, backpressured: make(map[string]bool), prices: pricing.NewCatalog()}
+	s := &Server{
+		repo:           repo,
+		analyticsRepo:  repo.ReadOnly(),
+		hub:            NewHub(),
+		log:            logger,
+		backpressured:  make(map[string]bool),
+		prices:         pricing.NewCatalog(),
+		dashboardCache: make(map[string]*dashboardCacheEntry),
+		liveSummary:    liveSummary{instances: make(map[string]liveInstance)},
+	}
 	s.ready.Store(true)
 	return s
 }
@@ -105,9 +124,14 @@ func (s *Server) PublicHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /ready", s.readyHandler)
+	mux.HandleFunc("GET /ready/write", s.writeReadyHandler)
 	mux.HandleFunc("GET /metrics", s.metrics)
+	mux.HandleFunc("GET /metrics/full", s.metricsUncached)
+	mux.HandleFunc("GET /api/v1/summary", s.summary)
 	mux.HandleFunc("GET /api/v1/status", s.status)
+	mux.HandleFunc("GET /api/v1/status/full", s.statusUncached)
 	mux.HandleFunc("GET /api/v1/dashboard", s.dashboard)
+	mux.HandleFunc("GET /api/v1/dashboard/snapshot", s.dashboardSnapshot)
 	mux.HandleFunc("GET /api/v1/instances", s.instances)
 	mux.HandleFunc("GET /api/v1/sessions", s.sessions)
 	mux.HandleFunc("GET /api/v1/sessions/", s.sessionDetail)
@@ -153,6 +177,7 @@ func (s *Server) Insert(ctx context.Context, events []event.Event) error {
 		s.hub.Publish(b)
 	}
 	s.observeBackpressure(res.Inserted)
+	s.observeLiveSummary(res.Inserted)
 	return nil
 }
 
@@ -200,6 +225,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		s.hub.Publish(b)
 	}
 	s.observeBackpressure(result.Inserted)
+	s.observeLiveSummary(result.Inserted)
 	writeJSON(w, 202, result)
 }
 
@@ -239,8 +265,29 @@ func (s *Server) observeBackpressure(events []event.Event) {
 func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{"status": "ok", "version": Version, "time": time.Now().UTC()})
 }
-func (s *Server) readyHandler(w http.ResponseWriter, r *http.Request) {
-	readiness, err := s.repo.Readiness(r.Context())
+func (s *Server) readyHandler(w http.ResponseWriter, _ *http.Request) {
+	if !s.ready.Load() {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "not_ready"})
+		return
+	}
+	summary := s.liveSummaryData()
+	response := map[string]any{"status": "ready", "mode": "serving"}
+	if value, ok := summary["eventDelaySeconds"]; ok {
+		response["eventDelaySeconds"] = value
+	}
+	if value, ok := summary["lastEventReceivedAt"]; ok {
+		response["lastEventReceivedAt"] = value
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// writeReadyHandler is the strict storage probe. It is intentionally separate
+// from /ready so a busy single writer reports pressure without making the
+// service availability endpoint hang.
+func (s *Server) writeReadyHandler(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 750*time.Millisecond)
+	defer cancel()
+	readiness, err := s.repo.Readiness(ctx)
 	if !s.ready.Load() || err != nil {
 		writeJSON(w, 503, map[string]any{"status": "not_ready"})
 		return
@@ -251,7 +298,7 @@ func (s *Server) readyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, response)
 }
-func (s *Server) status(w http.ResponseWriter, r *http.Request) {
+func (s *Server) statusUncached(w http.ResponseWriter, r *http.Request) {
 	v, err := s.statusData(r.Context())
 	if err != nil {
 		apiError(w, 500, "storage_error", "failed to query status")
@@ -260,12 +307,18 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	data(w, v)
 }
 
+// summary is intentionally memory-only. It is safe to poll for health updates
+// while a SQLite dashboard query is queued behind the single writer.
+func (s *Server) summary(w http.ResponseWriter, _ *http.Request) {
+	data(w, s.liveSummaryData())
+}
+
 func (s *Server) statusData(ctx context.Context) (map[string]any, error) {
-	v, err := s.repo.Status(ctx)
+	v, err := s.analyticsRepo.Status(ctx)
 	if err != nil {
 		return nil, err
 	}
-	schemaVersion, err := s.repo.SchemaVersion(ctx)
+	schemaVersion, err := s.analyticsRepo.SchemaVersion(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -296,63 +349,63 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query status")
 		return
 	}
-	timeseries, err := s.repo.TimeSeries(r.Context(), o, bucketSeconds)
+	timeseries, err := s.analyticsRepo.TimeSeries(r.Context(), o, bucketSeconds)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query timeseries")
 		return
 	}
 	timeseries["bucket"] = bucket
-	models, err := s.repo.ModelStats(r.Context(), o)
+	models, err := s.analyticsRepo.ModelStats(r.Context(), o)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query model stats")
 		return
 	}
-	tools, err := s.repo.ToolStats(r.Context(), o)
+	tools, err := s.analyticsRepo.ToolStats(r.Context(), o)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query tool stats")
 		return
 	}
-	agents, err := s.repo.AgentStats(r.Context(), o)
+	agents, err := s.analyticsRepo.AgentStats(r.Context(), o)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query agent stats")
 		return
 	}
-	agentModels, err := s.repo.AgentModelStats(r.Context(), o)
+	agentModels, err := s.analyticsRepo.AgentModelStats(r.Context(), o)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query agent model stats")
 		return
 	}
-	lifetime, err := s.repo.LifetimeStats(r.Context())
+	lifetime, err := s.analyticsRepo.LifetimeStats(r.Context())
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query lifetime stats")
 		return
 	}
-	sessions, err := s.repo.ListSessions(r.Context(), o)
+	sessions, err := s.analyticsRepo.ListSessions(r.Context(), o)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query sessions")
 		return
 	}
-	llmCalls, err := s.repo.ListLLMCalls(r.Context(), o)
+	llmCalls, err := s.analyticsRepo.ListLLMCalls(r.Context(), o)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query LLM calls")
 		return
 	}
-	errors, err := s.repo.ErrorStats(r.Context(), o)
+	errors, err := s.analyticsRepo.ErrorStats(r.Context(), o)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query error stats")
 		return
 	}
-	anomalies, err := s.repo.RecentAnomalies(r.Context(), o)
+	anomalies, err := s.analyticsRepo.RecentAnomalies(r.Context(), o)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query recent anomalies")
 		return
 	}
-	subagents, err := s.repo.ListSubagentRuns(r.Context(), o)
+	subagents, err := s.analyticsRepo.ListSubagentRuns(r.Context(), o)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query subagents")
 		return
 	}
-	mcpCalls, err := s.repo.ListMCPCalls(r.Context(), o)
+	mcpCalls, err := s.analyticsRepo.ListMCPCalls(r.Context(), o)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query MCP calls")
 		return
@@ -360,12 +413,12 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	cost7d := o
 	cost7d.To = time.Now().UTC().Format(time.RFC3339Nano)
 	cost7d.From = time.Now().UTC().AddDate(0, 0, -6).Format(time.RFC3339Nano)
-	costTrends, err := s.repo.CostTrends(r.Context(), cost7d, "day")
+	costTrends, err := s.analyticsRepo.CostTrends(r.Context(), cost7d, "day")
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query cost trends")
 		return
 	}
-	costSummary, err := s.repo.CostSummary(r.Context(), o)
+	costSummary, err := s.analyticsRepo.CostSummary(r.Context(), o)
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query cost summary")
 		return
@@ -373,7 +426,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	cost30d := o
 	cost30d.To = time.Now().UTC().Format(time.RFC3339Nano)
 	cost30d.From = time.Now().UTC().AddDate(0, 0, -30).Format(time.RFC3339Nano)
-	costTrends30d, err := s.repo.CostTrends(r.Context(), cost30d, "day")
+	costTrends30d, err := s.analyticsRepo.CostTrends(r.Context(), cost30d, "day")
 	if err != nil {
 		apiError(w, http.StatusInternalServerError, "storage_error", "failed to query 30-day cost trends")
 		return
@@ -387,7 +440,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	})
 }
 func (s *Server) instances(w http.ResponseWriter, r *http.Request) {
-	v, err := s.repo.ListInstances(r.Context())
+	v, err := s.analyticsRepo.ListInstances(r.Context())
 	list(w, v, err, 500)
 }
 func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
@@ -396,7 +449,7 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "invalid_query", err.Error())
 		return
 	}
-	v, e := s.repo.ListSessions(r.Context(), o)
+	v, e := s.analyticsRepo.ListSessions(r.Context(), o)
 	list(w, v, e, o.Limit)
 }
 func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
@@ -405,7 +458,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "invalid_query", err.Error())
 		return
 	}
-	v, e := s.repo.ListRuns(r.Context(), o)
+	v, e := s.analyticsRepo.ListRuns(r.Context(), o)
 	list(w, v, e, o.Limit)
 }
 func (s *Server) resources(w http.ResponseWriter, r *http.Request) {
@@ -414,7 +467,7 @@ func (s *Server) resources(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "invalid_query", err.Error())
 		return
 	}
-	v, e := s.repo.ListResources(r.Context(), o)
+	v, e := s.analyticsRepo.ListResources(r.Context(), o)
 	list(w, v, e, o.Limit)
 }
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
@@ -424,17 +477,17 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	o.EventType = r.URL.Query().Get("eventType")
-	v, e := s.repo.ListEvents(r.Context(), o)
+	v, e := s.analyticsRepo.ListEvents(r.Context(), o)
 	list(w, v, e, o.Limit)
 }
 func (s *Server) sessionDetail(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
-	v, err := s.repo.SessionDetail(r.Context(), id)
+	v, err := s.analyticsRepo.SessionDetail(r.Context(), id)
 	detail(w, v, err)
 }
 func (s *Server) runDetail(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/v1/runs/")
-	v, err := s.repo.RunDetail(r.Context(), id)
+	v, err := s.analyticsRepo.RunDetail(r.Context(), id)
 	detail(w, v, err)
 }
 func (s *Server) toolStats(w http.ResponseWriter, r *http.Request) {
@@ -443,7 +496,7 @@ func (s *Server) toolStats(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "invalid_query", err.Error())
 		return
 	}
-	v, e := s.repo.ToolStats(r.Context(), o)
+	v, e := s.analyticsRepo.ToolStats(r.Context(), o)
 	list(w, v, e, 200)
 }
 func (s *Server) modelStats(w http.ResponseWriter, r *http.Request) {
@@ -452,7 +505,7 @@ func (s *Server) modelStats(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "invalid_query", err.Error())
 		return
 	}
-	v, e := s.repo.ModelStats(r.Context(), o)
+	v, e := s.analyticsRepo.ModelStats(r.Context(), o)
 	list(w, v, e, 200)
 }
 
@@ -462,7 +515,7 @@ func (s *Server) agentStats(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "invalid_query", err.Error())
 		return
 	}
-	v, e := s.repo.AgentStats(r.Context(), o)
+	v, e := s.analyticsRepo.AgentStats(r.Context(), o)
 	list(w, v, e, 200)
 }
 
@@ -472,7 +525,7 @@ func (s *Server) subagents(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "invalid_query", err.Error())
 		return
 	}
-	v, e := s.repo.ListSubagentRuns(r.Context(), o)
+	v, e := s.analyticsRepo.ListSubagentRuns(r.Context(), o)
 	list(w, v, e, o.Limit)
 }
 
@@ -482,7 +535,7 @@ func (s *Server) mcpCalls(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "invalid_query", err.Error())
 		return
 	}
-	v, e := s.repo.ListMCPCalls(r.Context(), o)
+	v, e := s.analyticsRepo.ListMCPCalls(r.Context(), o)
 	list(w, v, e, o.Limit)
 }
 
@@ -492,7 +545,7 @@ func (s *Server) llmCalls(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "invalid_query", err.Error())
 		return
 	}
-	v, e := s.repo.ListLLMCalls(r.Context(), o)
+	v, e := s.analyticsRepo.ListLLMCalls(r.Context(), o)
 	list(w, v, e, o.Limit)
 }
 
@@ -502,7 +555,7 @@ func (s *Server) errorStats(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "invalid_query", err.Error())
 		return
 	}
-	v, e := s.repo.ErrorStats(r.Context(), o)
+	v, e := s.analyticsRepo.ErrorStats(r.Context(), o)
 	list(w, v, e, 200)
 }
 
@@ -517,7 +570,7 @@ func (s *Server) timeseries(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "invalid_query", err.Error())
 		return
 	}
-	v, err := s.repo.TimeSeries(r.Context(), o, bucketSeconds)
+	v, err := s.analyticsRepo.TimeSeries(r.Context(), o, bucketSeconds)
 	if err != nil {
 		apiError(w, 500, "storage_error", "query failed")
 		return
@@ -574,7 +627,7 @@ func (s *Server) costTrends(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "invalid_query", "period must be day, week, or month")
 		return
 	}
-	v, e := s.repo.CostTrends(r.Context(), o, period)
+	v, e := s.analyticsRepo.CostTrends(r.Context(), o, period)
 	list(w, v, e, 200)
 }
 
@@ -584,7 +637,7 @@ func (s *Server) costSummary(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "invalid_query", err.Error())
 		return
 	}
-	v, e := s.repo.CostSummary(r.Context(), o)
+	v, e := s.analyticsRepo.CostSummary(r.Context(), o)
 	if e != nil {
 		apiError(w, 500, "storage_error", "query failed")
 		return
@@ -708,12 +761,11 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
-	if _, err := s.repo.EstimateMissingLLMCosts(r.Context(), s.prices.Estimate); err != nil {
-		apiError(w, 500, "metrics_error", "failed to persist missing cost estimates")
-		return
-	}
-	snap, err := s.repo.Metrics(r.Context(), float64(time.Now().Unix()))
+func (s *Server) metricsUncached(w http.ResponseWriter, r *http.Request) {
+	// Prometheus scrapes stay read-only. Missing prices are calculated as an
+	// in-memory overlay below, so a scrape never competes with event ingestion
+	// for the single SQLite writer connection.
+	snap, err := s.analyticsRepo.Metrics(r.Context(), float64(time.Now().Unix()))
 	if err != nil {
 		apiError(w, 500, "metrics_error", "failed to aggregate metrics")
 		return
@@ -723,8 +775,15 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 500, "metrics_error", "failed to estimate cost metrics")
 		return
 	}
+	costByModel24h, costByAgentModel24h, _, err := s.effectiveCostMetricsSince(r.Context(), time.Now().Add(-24*time.Hour))
+	if err != nil {
+		apiError(w, 500, "metrics_error", "failed to estimate 24h cost metrics")
+		return
+	}
 	snap.LLMCost = costByModel
 	snap.AgentModelCost = costByAgentModel
+	snap.LLMCost24h = costByModel24h
+	snap.AgentModelCost24h = costByAgentModel24h
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	emit := func(name, typ, help string, rows []storage.MetricRow) {
 		fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, typ)
@@ -791,6 +850,34 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	emitSummary("openclaw_monitor_reduce_duration_seconds", "Time spent reducing events into projections.", writeMetrics.ReduceSeconds, writeMetrics.ReduceCount)
 	emitSummary("openclaw_monitor_commit_duration_seconds", "Time spent committing SQLite write transactions.", writeMetrics.CommitSeconds, writeMetrics.CommitCount)
 	emitSummary("openclaw_monitor_query_duration_seconds", "End-to-end duration of REST API queries.", writeMetrics.QuerySeconds, writeMetrics.QueryCount)
+	dashboardCache := s.dashboardStats.snapshot()
+	emit("openclaw_dashboard_cache_responses_total", "counter", "Dashboard snapshot cache response outcomes.", []storage.MetricRow{
+		{Labels: map[string]string{"result": "hit"}, Value: float64(dashboardCache.Hits)},
+		{Labels: map[string]string{"result": "stale"}, Value: float64(dashboardCache.Stale)},
+		{Labels: map[string]string{"result": "miss"}, Value: float64(dashboardCache.Misses)},
+		{Labels: map[string]string{"result": "coalesced"}, Value: float64(dashboardCache.Coalesced)},
+		{Labels: map[string]string{"result": "warming"}, Value: float64(dashboardCache.ColdFallbacks)},
+	})
+	emit("openclaw_dashboard_cache_entries", "gauge", "Number of in-memory dashboard snapshot cache entries.", []storage.MetricRow{{Value: float64(s.dashboardCacheEntryCount())}})
+	emit("openclaw_dashboard_snapshot_refresh_failures_total", "counter", "Dashboard snapshot background refresh failures.", []storage.MetricRow{{Value: float64(dashboardCache.RefreshFailed)}})
+	emit("openclaw_dashboard_snapshot_module_failures_total", "counter", "Dashboard module failures served with stale or empty data.", []storage.MetricRow{{Value: float64(dashboardCache.ModuleFailures)}})
+	emit("openclaw_dashboard_snapshot_cancellations_total", "counter", "Dashboard module or client context cancellations.", []storage.MetricRow{{Value: float64(dashboardCache.Cancellations)}})
+	emitSummary("openclaw_dashboard_snapshot_refresh_duration_seconds", "Time spent building dashboard snapshots in the background.", dashboardCache.RefreshSeconds, dashboardCache.Refreshes)
+	writerPool, readPool := s.repo.PoolStats(), s.repo.ReadPoolStats()
+	emit("openclaw_monitor_sql_queue_wait_seconds_total", "counter", "Cumulative time waiting for a SQLite connection.", []storage.MetricRow{
+		{Labels: map[string]string{"pool": "writer"}, Value: writerPool.WaitDuration.Seconds()},
+		{Labels: map[string]string{"pool": "read"}, Value: readPool.WaitDuration.Seconds()},
+	})
+	emit("openclaw_monitor_sql_queue_waits_total", "counter", "Times a caller waited for a SQLite connection.", []storage.MetricRow{
+		{Labels: map[string]string{"pool": "writer"}, Value: float64(writerPool.WaitCount)},
+		{Labels: map[string]string{"pool": "read"}, Value: float64(readPool.WaitCount)},
+	})
+	emit("openclaw_monitor_sql_connections", "gauge", "Open and in-use SQLite connections; the writer stays single-connection and reads use a bounded pool.", []storage.MetricRow{
+		{Labels: map[string]string{"pool": "writer", "state": "open"}, Value: float64(writerPool.OpenConnections)},
+		{Labels: map[string]string{"pool": "writer", "state": "in_use"}, Value: float64(writerPool.InUse)},
+		{Labels: map[string]string{"pool": "read", "state": "open"}, Value: float64(readPool.OpenConnections)},
+		{Labels: map[string]string{"pool": "read", "state": "in_use"}, Value: float64(readPool.InUse)},
+	})
 	resources := map[string]string{"cpuSecondsTotal": "openclaw_process_cpu_seconds_total", "residentMemoryBytes": "openclaw_process_resident_memory_bytes", "virtualMemoryBytes": "openclaw_process_virtual_memory_bytes", "threads": "openclaw_process_threads", "openFds": "openclaw_process_open_fds", "readBytesTotal": "openclaw_process_read_bytes_total", "writeBytesTotal": "openclaw_process_write_bytes_total", "diskTotalBytes": "openclaw_host_disk_total_bytes", "diskAvailableBytes": "openclaw_host_disk_available_bytes"}
 	for kind, name := range resources {
 		var rows []storage.MetricRow
@@ -900,10 +987,22 @@ func boolNumber(value bool) float64 {
 }
 
 func (s *Server) effectiveCostMetrics(ctx context.Context) ([]storage.MetricRow, []storage.MetricRow, []storage.MetricRow, error) {
-	usage, err := s.repo.LLMUsageForCostMetrics(ctx)
+	usage, err := s.analyticsRepo.LLMUsageForCostMetrics(ctx)
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	return s.effectiveCostMetricsForUsage(usage)
+}
+
+func (s *Server) effectiveCostMetricsSince(ctx context.Context, since time.Time) ([]storage.MetricRow, []storage.MetricRow, []storage.MetricRow, error) {
+	usage, err := s.analyticsRepo.LLMUsageForCostMetricsSince(ctx, since)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return s.effectiveCostMetricsForUsage(usage)
+}
+
+func (s *Server) effectiveCostMetricsForUsage(usage []storage.LLMUsageMetricRow) ([]storage.MetricRow, []storage.MetricRow, []storage.MetricRow, error) {
 	byModel := make(map[string]storage.MetricRow)
 	byAgentModel := make(map[string]storage.MetricRow)
 	unpriced := make(map[string]storage.MetricRow)

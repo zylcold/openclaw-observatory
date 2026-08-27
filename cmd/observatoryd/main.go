@@ -106,6 +106,11 @@ func run() error {
 	}
 	srv := server.New(repo, logger)
 	srv.SetPricingCatalog(priceCatalog)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+		defer cancel()
+		srv.PrimeLiveSummary(ctx)
+	}()
 	ingestHTTP := &http.Server{Handler: srv.IngestHandler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	publicHTTP := &http.Server{Handler: srv.PublicHandler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	retentionJob := storage.NewRetentionJob(repo, storage.RetentionConfig{
