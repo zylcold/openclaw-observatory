@@ -13,9 +13,11 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/zylcold/openclaw-observatory/internal/memory"
 	"github.com/zylcold/openclaw-observatory/internal/pricing"
 	"github.com/zylcold/openclaw-observatory/internal/process"
 	"github.com/zylcold/openclaw-observatory/internal/server"
@@ -48,6 +50,16 @@ func run() error {
 	gatewayHealthURL := flag.String("gateway-health-url", "http://127.0.0.1:18789/health", "OpenClaw Gateway health endpoint for active response probes")
 	gatewayProbeInterval := flag.Duration("gateway-probe-interval", 5*time.Second, "active Gateway response probe interval (0 = disabled)")
 	gatewayProbeTimeout := flag.Duration("gateway-probe-timeout", 3*time.Second, "active Gateway response probe timeout")
+	memoryEnabled := flag.Bool("memory-metrics-enabled", true, "enable agent memory metrics (recall, index health, embedding provider probe)")
+	memoryAgentsDir := flag.String("memory-agents-dir", "", "OpenClaw agents directory (default ~/.openclaw/agents)")
+	memoryAgentNames := flag.String("memory-agents", "main,coding,product,tim,owl", "fallback agent names used when the CLI is unavailable (comma separated)")
+	openclawHome := flag.String("openclaw-home", "", "OpenClaw home directory for agent discovery (default ~/.openclaw)")
+	openclawBin := flag.String("openclaw-bin", "/opt/homebrew/bin/openclaw", "openclaw CLI binary used for memory status discovery")
+	memoryEventInterval := flag.Duration("memory-event-interval", 15*time.Second, "memory host event log scan interval")
+	memoryIndexInterval := flag.Duration("memory-index-interval", 60*time.Second, "memory index health collection interval")
+	memoryProbeInterval := flag.Duration("memory-probe-interval", 30*time.Second, "embedding provider probe interval (0 = disabled)")
+	memoryProbeURL := flag.String("memory-probe-url", "http://192.168.64.1:1234/v1/models", "embedding provider (LM Studio) OpenAI-compatible models endpoint")
+	memoryProbeTimeout := flag.Duration("memory-probe-timeout", 3*time.Second, "embedding provider probe timeout")
 	flag.Parse()
 	if *socketPath == "" {
 		*socketPath = filepath.Join(*dataDir, "observatory.sock")
@@ -115,6 +127,53 @@ func run() error {
 	go serveWithRetry(ctx, publicHTTP, tcp, func() (net.Listener, error) { return net.Listen("tcp", *listenAddr) }, "public", logger, errCh)
 	collector := process.NewCollector(repo, *sampleInterval, srv.Insert)
 	go collector.Run(ctx)
+	if *memoryEnabled {
+		memConfig := memory.Config{
+			OpenClawHome:  *openclawHome,
+			AgentsDir:     *memoryAgentsDir,
+			OpenCLawBin:   *openclawBin,
+			DataDir:       *dataDir,
+			EventInterval: *memoryEventInterval,
+			IndexInterval: *memoryIndexInterval,
+			ProbeInterval: *memoryProbeInterval,
+			ProbeURL:      *memoryProbeURL,
+			ProbeTimeout:  *memoryProbeTimeout,
+		}
+		if *openclawHome == "" {
+			memConfig.OpenClawHome = filepath.Join(home, ".openclaw")
+		}
+		if *memoryAgentsDir == "" {
+			memConfig.AgentsDir = filepath.Join(memConfig.OpenClawHome, "agents")
+		}
+		for _, name := range strings.Split(*memoryAgentNames, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			agent := memory.Agent{Name: name}
+			agent.DBPath = filepath.Join(memConfig.AgentsDir, name, "agent", "openclaw-agent.sqlite")
+			for _, candidate := range []string{
+				filepath.Join(memConfig.AgentsDir, name, "workspace"),
+				filepath.Join(memConfig.OpenClawHome, "workspace-"+name),
+			} {
+				if _, err := os.Stat(filepath.Join(candidate, "memory", ".dreams")); err == nil {
+					agent.WorkspaceDir = candidate
+					break
+				}
+			}
+			if agent.WorkspaceDir == "" && name == "main" {
+				candidate := filepath.Join(memConfig.OpenClawHome, "workspace")
+				if _, err := os.Stat(candidate); err == nil {
+					agent.WorkspaceDir = candidate
+				}
+			}
+			memConfig.Overrides = append(memConfig.Overrides, agent)
+		}
+		memManager := memory.New(memConfig, logger)
+		srv.SetMemoryManager(memManager)
+		go memManager.Run(ctx)
+		logger.Info("memory metrics enabled", "agents", *memoryAgentNames, "probe_url", *memoryProbeURL, "index_interval", *memoryIndexInterval)
+	}
 	logger.Info("OpenClaw Observatory ready", "http", "http://"+*listenAddr, "socket", *socketPath, "database", *dbPath, "version", server.Version,
 		"retention_events_days", *retentionEvents, "retention_samples_days", *retentionSamples, "retention_all_days", *retentionAll)
 	sigCh := make(chan os.Signal, 1)

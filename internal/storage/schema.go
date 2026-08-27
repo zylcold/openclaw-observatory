@@ -1,6 +1,6 @@
 package storage
 
-const CurrentSchemaVersion = 7
+const CurrentSchemaVersion = 8
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -289,4 +289,28 @@ CREATE INDEX IF NOT EXISTS idx_retry_session_time ON retry_events(instance_id,se
 const schemaV7 = `
 ALTER TABLE llm_calls ADD COLUMN estimated_cost_usd REAL NOT NULL DEFAULT 0;
 ALTER TABLE llm_calls ADD COLUMN pricing_source TEXT;
+`
+
+const schemaV8 = `
+CREATE TABLE IF NOT EXISTS embedding_calls (
+  instance_id TEXT NOT NULL,
+  call_id TEXT NOT NULL,
+  run_id TEXT,
+  session_id TEXT,
+  agent_id TEXT,
+  provider TEXT,
+  model TEXT,
+  api TEXT,
+  status TEXT NOT NULL DEFAULT 'unknown',
+  started_at TEXT,
+  ended_at TEXT,
+  duration_ms REAL,
+  error_category TEXT,
+  trace_id TEXT,
+  span_id TEXT,
+  parent_span_id TEXT,
+  PRIMARY KEY(instance_id, call_id)
+);
+CREATE INDEX IF NOT EXISTS idx_embedding_time ON embedding_calls(instance_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_embedding_agent ON embedding_calls(instance_id, agent_id, status);
 `
