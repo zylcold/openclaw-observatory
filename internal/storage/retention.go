@@ -28,10 +28,15 @@ var retentionColumns = map[string]map[string]bool{
 // AllDays        – hard cap for projection tables (sessions, agent_runs, etc.).
 //
 //	0 means "do not purge projection tables".
+//
+// Rollups300Days / Rollups3600Days – retention windows for trend_rollups rows
+// by bucket size (300s / 3600s). 0 means "do not purge trend_rollups".
 type RetentionConfig struct {
-	RawEventsDays int
-	SamplesDays   int
-	AllDays       int
+	RawEventsDays   int
+	SamplesDays     int
+	AllDays         int
+	Rollups300Days  int
+	Rollups3600Days int
 }
 
 func (c RetentionConfig) normalized() RetentionConfig {
@@ -40,6 +45,12 @@ func (c RetentionConfig) normalized() RetentionConfig {
 	}
 	if c.SamplesDays <= 0 {
 		c.SamplesDays = 30
+	}
+	if c.Rollups300Days < 0 {
+		c.Rollups300Days = 0
+	}
+	if c.Rollups3600Days < 0 {
+		c.Rollups3600Days = 0
 	}
 	return c
 }
@@ -130,6 +141,106 @@ func (j *RetentionJob) runOnce(ctx context.Context) {
 			}
 		}
 	}
+
+	// 4. Prune trend_rollups by bucket size. Each bucket size has its own
+	// retention window (300s → 30 days, 3600s → 90 days). Only the rollup
+	// buckets are removed; the trend_rollup_watermarks watermarks are never
+	// deleted and their covered_from is only ever advanced forward, so a
+	// rebuild that starts from covered_from stays inside the retention window.
+	if cfg.Rollups300Days > 0 {
+		before := cutoff.AddDate(0, 0, -cfg.Rollups300Days)
+		deleted, err := j.repo.pruneTrendRollups(ctx, 300, before)
+		if err != nil {
+			j.log.Error("retention: purge trend_rollups", "bucket_seconds", 300, "error", err)
+		} else if deleted > 0 {
+			j.log.Info("retention: purged old trend_rollups", "bucket_seconds", 300, "rows", deleted, "cutoff", before.Format(time.RFC3339))
+		}
+	}
+	if cfg.Rollups3600Days > 0 {
+		before := cutoff.AddDate(0, 0, -cfg.Rollups3600Days)
+		deleted, err := j.repo.pruneTrendRollups(ctx, 3600, before)
+		if err != nil {
+			j.log.Error("retention: purge trend_rollups", "bucket_seconds", 3600, "error", err)
+		} else if deleted > 0 {
+			j.log.Info("retention: purged old trend_rollups", "bucket_seconds", 3600, "rows", deleted, "cutoff", before.Format(time.RFC3339))
+		}
+	}
+}
+
+// trendRollupBuckets are the bucket sizes the retention job knows how to
+// prune. Anything else is rejected to prevent accidental full-table deletes.
+var trendRollupBuckets = map[int]bool{300: true, 3600: true}
+
+// pruneTrendRollups removes trend_rollups rows for a given bucket size whose
+// bucket_start predates the cutoff. Rows are deleted in bounded batches so the
+// SQLite write lock is not held for an unbounded delete.
+//
+// The trend_rollup_watermarks rows are intentionally left in place. Their
+// covered_from is advanced to the retention window start (never moved back),
+// which constrains any covered_from-based rebuild to the retained window so
+// pruned buckets are not recreated. If the table is absent (e.g. the rollup
+// builder is not deployed), this is a no-op.
+func (r *Repository) pruneTrendRollups(ctx context.Context, bucketSeconds int, cutoff time.Time) (int64, error) {
+	if !trendRollupBuckets[bucketSeconds] {
+		return 0, fmt.Errorf("retention: unsupported trend_rollups bucket_seconds %d", bucketSeconds)
+	}
+	exists, err := r.tableExists(ctx, "trend_rollups")
+	if err != nil || !exists {
+		return 0, err
+	}
+	query := `DELETE FROM trend_rollups WHERE rowid IN (
+  SELECT rowid FROM trend_rollups WHERE bucket_seconds=? AND bucket_start < ? LIMIT ?
+)`
+	var deleted int64
+	for {
+		res, err := r.db.ExecContext(ctx, query, bucketSeconds, cutoff.Format(time.RFC3339Nano), retentionDeleteBatchSize)
+		if err != nil {
+			return deleted, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return deleted, err
+		}
+		deleted += n
+		if n < retentionDeleteBatchSize {
+			break
+		}
+	}
+	if _, err := r.advanceTrendRollupWatermarks(ctx, bucketSeconds, cutoff); err != nil {
+		return deleted, err
+	}
+	return deleted, nil
+}
+
+// advanceTrendRollupWatermarks moves each watermark's covered_from forward so
+// it never predates the retention window. This is the "rebuild start takes
+// max(watermark, retention window start)" guard applied at the data layer:
+// a builder that (re)builds from covered_from will not resurrect pruned
+// buckets because the surviving window already starts at the cutoff.
+func (r *Repository) advanceTrendRollupWatermarks(ctx context.Context, bucketSeconds int, minCoveredFrom time.Time) (int64, error) {
+	exists, err := r.tableExists(ctx, "trend_rollup_watermarks")
+	if err != nil || !exists {
+		return 0, err
+	}
+	cutoff := minCoveredFrom.Format(time.RFC3339Nano)
+	res, err := r.db.ExecContext(ctx, `UPDATE trend_rollup_watermarks
+	  SET covered_from=?
+	  WHERE bucket_seconds=? AND covered_from<>'' AND covered_from<?`,
+		cutoff, bucketSeconds, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func (r *Repository) tableExists(ctx context.Context, table string) (bool, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&n)
+	return n > 0, err
 }
 
 // deleteBefore removes rows in bounded batches so retention does not hold the
@@ -197,6 +308,24 @@ func (r *Repository) RunRetentionOnce(ctx context.Context, cfg RetentionConfig) 
 			}
 			results[table] = n
 		}
+	}
+
+	if cfg.Rollups300Days > 0 {
+		before := cutoff.AddDate(0, 0, -cfg.Rollups300Days)
+		n, err := r.pruneTrendRollups(ctx, 300, before)
+		if err != nil {
+			return results, fmt.Errorf("trend_rollups_300: %w", err)
+		}
+		results["trend_rollups_300"] = n
+	}
+
+	if cfg.Rollups3600Days > 0 {
+		before := cutoff.AddDate(0, 0, -cfg.Rollups3600Days)
+		n, err := r.pruneTrendRollups(ctx, 3600, before)
+		if err != nil {
+			return results, fmt.Errorf("trend_rollups_3600: %w", err)
+		}
+		results["trend_rollups_3600"] = n
 	}
 
 	return results, nil

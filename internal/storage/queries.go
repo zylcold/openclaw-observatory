@@ -639,3 +639,48 @@ func toFloat(v any) (float64, bool) {
 	}
 	return 0, false
 }
+
+// EmbeddingMetricsSnapshot aggregates embedding model calls (api="embedding")
+// for Prometheus export. Durations are seconds for completed calls, grouped by
+// agent so percentiles can be computed in the metrics handler.
+type EmbeddingMetricsSnapshot struct {
+	ByStatus  []MetricRow
+	Failures  []MetricRow
+	Durations map[string][]float64
+}
+
+// EmbeddingMetrics returns counters and latency samples for embedding calls.
+// Embedding calls are forwarded by the plugin as embedding.started/completed/
+// failed events; the provider probe gauges live in the memory package.
+func (r *Repository) EmbeddingMetrics(ctx context.Context) (EmbeddingMetricsSnapshot, error) {
+	snap := EmbeddingMetricsSnapshot{Durations: map[string][]float64{}}
+	byStatus, err := metricRows(ctx, r.db, `SELECT instance_id,COALESCE(NULLIF(agent_id,''),'unknown'),COALESCE(provider,'unknown'),COALESCE(model,'unknown'),status,COUNT(*)
+	  FROM embedding_calls GROUP BY instance_id,COALESCE(NULLIF(agent_id,''),'unknown'),COALESCE(provider,'unknown'),COALESCE(model,'unknown'),status`,
+		[]string{"instance", "agentId", "provider", "model", "status"})
+	if err != nil {
+		return snap, err
+	}
+	snap.ByStatus = byStatus
+	failures, err := metricRows(ctx, r.db, `SELECT instance_id,COALESCE(NULLIF(agent_id,''),'unknown'),COALESCE(NULLIF(error_category,''),'unknown'),COUNT(*)
+	  FROM embedding_calls WHERE status='failed' GROUP BY instance_id,COALESCE(NULLIF(agent_id,''),'unknown'),COALESCE(NULLIF(error_category,''),'unknown')`,
+		[]string{"instance", "agentId", "reason"})
+	if err != nil {
+		return snap, err
+	}
+	snap.Failures = failures
+	rows, err := r.db.QueryContext(ctx, `SELECT COALESCE(NULLIF(agent_id,''),'unknown'),duration_ms
+	  FROM embedding_calls WHERE status='completed' AND duration_ms > 0`)
+	if err != nil {
+		return snap, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var agent string
+		var durationMs float64
+		if err := rows.Scan(&agent, &durationMs); err != nil {
+			return snap, err
+		}
+		snap.Durations[agent] = append(snap.Durations[agent], durationMs/1000.0)
+	}
+	return snap, rows.Err()
+}

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/zylcold/openclaw-observatory/internal/event"
+	"github.com/zylcold/openclaw-observatory/internal/memory"
 	"github.com/zylcold/openclaw-observatory/internal/pricing"
 	"github.com/zylcold/openclaw-observatory/internal/storage"
 )
@@ -43,6 +44,7 @@ type Server struct {
 	prices         *pricing.Catalog
 	gatewayProbeMu sync.RWMutex
 	gatewayProbe   GatewayProbeSnapshot
+	memory         *memory.Manager
 
 	dashboardCacheMu sync.Mutex
 	dashboardCache   map[string]*dashboardCacheEntry
@@ -82,6 +84,10 @@ func (s *Server) SetPricingCatalog(catalog *pricing.Catalog) {
 	if catalog != nil {
 		s.prices = catalog
 	}
+}
+
+func (s *Server) SetMemoryManager(m *memory.Manager) {
+	s.memory = m
 }
 
 func (s *Server) RecordGatewayProbe(duration time.Duration, statusCode int, err error) {
@@ -894,6 +900,72 @@ func (s *Server) metricsUncached(w http.ResponseWriter, r *http.Request) {
 	// the canonical counter names above so Prometheus reset handling is explicit.
 	emit("openclaw_llm_tokens_by_agent_model", "counter", "Deprecated alias for total tokens by agent and model.", aggregateWithoutLabel(snap.AgentModelTokens, "instance"))
 	emit("openclaw_llm_cost_by_agent_model", "counter", "Deprecated alias for total cost in USD by agent and model.", aggregateWithoutLabel(snap.AgentModelCost, "instance"))
+	s.emitMemoryMetrics(w, emit)
+}
+
+func (s *Server) emitMemoryMetrics(w io.Writer, emit func(name, typ, help string, rows []storage.MetricRow)) {
+	if s.memory == nil {
+		return
+	}
+	for _, group := range s.memory.MemoryMetrics() {
+		emit(group.Name, group.Type, group.Help, group.Rows)
+	}
+	for _, group := range s.memory.IndexMetrics() {
+		emit(group.Name, group.Type, group.Help, group.Rows)
+	}
+	for _, group := range s.memory.ProbeMetrics() {
+		emit(group.Name, group.Type, group.Help, group.Rows)
+	}
+	embedding, err := s.repo.EmbeddingMetrics(context.Background())
+	if err != nil {
+		return
+	}
+	// By-status counters.
+	var byStatus []storage.MetricRow
+	for _, row := range embedding.ByStatus {
+		byStatus = append(byStatus, storage.MetricRow{
+			Labels: map[string]string{
+				"instance": row.Labels["instance"],
+				"agentId":  row.Labels["agentId"],
+				"provider": row.Labels["provider"],
+				"model":    row.Labels["model"],
+				"status":   row.Labels["status"],
+			},
+			Value: row.Value,
+		})
+	}
+	emit("openclaw_embedding_requests_total", "counter", "Embedding model calls by status.", byStatus)
+	emit("openclaw_embedding_failures_total", "counter", "Failed embedding model calls by error category.", embedding.Failures)
+	// Latency percentiles per agent (recall latency is the embedding round-trip).
+	var latencyRows []storage.MetricRow
+	var recallLatencyRows []storage.MetricRow
+	var timeoutRows []storage.MetricRow
+	var recallTimeoutRows []storage.MetricRow
+	totalTimeoutByAgent := map[string]float64{}
+	for _, row := range embedding.Failures {
+		if strings.Contains(strings.ToLower(row.Labels["reason"]), "timeout") {
+			totalTimeoutByAgent[row.Labels["agentId"]] += row.Value
+		}
+	}
+	for agent, durations := range embedding.Durations {
+		p50, p95 := memory.Quantiles(durations)
+		latencyRows = append(latencyRows,
+			storage.MetricRow{Labels: map[string]string{"agentId": agent, "quantile": "p50"}, Value: p50},
+			storage.MetricRow{Labels: map[string]string{"agentId": agent, "quantile": "p95"}, Value: p95},
+		)
+		recallLatencyRows = append(recallLatencyRows,
+			storage.MetricRow{Labels: map[string]string{"agentId": agent, "quantile": "p50"}, Value: p50},
+			storage.MetricRow{Labels: map[string]string{"agentId": agent, "quantile": "p95"}, Value: p95},
+		)
+	}
+	for agent, count := range totalTimeoutByAgent {
+		timeoutRows = append(timeoutRows, storage.MetricRow{Labels: map[string]string{"agentId": agent}, Value: count})
+		recallTimeoutRows = append(recallTimeoutRows, storage.MetricRow{Labels: map[string]string{"agentId": agent}, Value: count})
+	}
+	emit("openclaw_embedding_latency_seconds", "gauge", "Embedding call latency percentiles (p50/p95) in seconds by agent.", latencyRows)
+	emit("openclaw_embedding_timeouts_total", "counter", "Embedding calls that timed out, by agent.", timeoutRows)
+	emit("openclaw_memory_recall_latency_seconds", "gauge", "Memory recall latency percentiles (p50/p95) in seconds by agent, measured as the embedding round-trip.", recallLatencyRows)
+	emit("openclaw_memory_recall_timeouts_total", "counter", "Memory recall timeouts by agent, derived from timed-out embedding calls.", recallTimeoutRows)
 }
 
 func probeRows(instances []storage.MetricRow, value float64) []storage.MetricRow {

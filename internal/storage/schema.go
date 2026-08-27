@@ -1,6 +1,6 @@
 package storage
 
-const CurrentSchemaVersion = 8
+const CurrentSchemaVersion = 10
 
 const schemaV1 = `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -296,4 +296,33 @@ ALTER TABLE llm_calls ADD COLUMN pricing_source TEXT;
 // dashboard range has no instance filter and otherwise scans every sample.
 const schemaV8 = `
 CREATE INDEX IF NOT EXISTS idx_resources_time ON resource_samples(sampled_at);
+`
+
+// schemaV10 supersedes the pre-merge feature-branch schemaV8 (embedding_calls):
+// schema version 8 was claimed upstream by idx_resources_time (applied
+// 2026-08-04), so the embedding_calls table is re-versioned as v10. A local
+// DB that already recorded the branch's v8 as applied is handled by the
+// bootstrap backfill in repository.go.
+const schemaV10 = `
+CREATE TABLE IF NOT EXISTS embedding_calls (
+  instance_id TEXT NOT NULL,
+  call_id TEXT NOT NULL,
+  run_id TEXT,
+  session_id TEXT,
+  agent_id TEXT,
+  provider TEXT,
+  model TEXT,
+  api TEXT,
+  status TEXT NOT NULL DEFAULT 'unknown',
+  started_at TEXT,
+  ended_at TEXT,
+  duration_ms REAL,
+  error_category TEXT,
+  trace_id TEXT,
+  span_id TEXT,
+  parent_span_id TEXT,
+  PRIMARY KEY(instance_id, call_id)
+);
+CREATE INDEX IF NOT EXISTS idx_embedding_time ON embedding_calls(instance_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_embedding_agent ON embedding_calls(instance_id, agent_id, status);
 `

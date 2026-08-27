@@ -151,17 +151,19 @@ export class Forwarder {
         }, "critical", evt.ts); break;
       case "model.call.started": {
         const value = { ...callTrace(evt.callId), callId: cleanString(evt.callId), api: cleanString(evt.api, 64), transport: cleanString(evt.transport, 64) };
-        this.rememberCall(evt, value, "active"); this.enqueue("llm.started", value, "normal", evt.ts); break;
+        this.rememberCall(evt, value, "active");
+        this.enqueue(evt.api === "embedding" ? "embedding.started" : "llm.started", value, "normal", evt.ts); break;
       }
       case "model.call.completed":
       case "model.call.error": {
         const failed = evt.type.endsWith("error");
+        const kind = evt.api === "embedding" ? "embedding" : "llm";
         const value = { ...callTrace(evt.callId), callId: cleanString(evt.callId), api: cleanString(evt.api, 64), transport: cleanString(evt.transport, 64),
           durationMs: evt.durationMs, errorCategory: cleanString(evt.errorCategory, 64), failureKind: cleanString(evt.failureKind, 64),
           requestPayloadBytes: evt.requestPayloadBytes, responseStreamBytes: evt.responseStreamBytes,
           timeToFirstByteMs: evt.timeToFirstByteMs, timeToFirstTokenMs: evt.timeToFirstTokenMs,
           generationDurationMs: evt.generationDurationMs, stopReason: cleanString(evt.stopReason, 64) };
-        this.rememberCall(evt, value, failed ? "failed" : "completed"); this.enqueue(failed ? "llm.failed" : "llm.completed", value, "critical", evt.ts); break;
+        this.rememberCall(evt, value, failed ? "failed" : "completed"); this.enqueue(failed ? `${kind}.failed` : `${kind}.completed`, value, "critical", evt.ts); break;
       }
       case "model.usage": {
         this.mapUsage(evt); break;
@@ -190,6 +192,16 @@ export class Forwarder {
         this.enqueue("gateway.heartbeat", { active: evt.active, waiting: evt.waiting, queued: evt.queued, queueDepth: this.queue.length, queueCapacity: this.capacity }, "low", evt.ts); break;
       case "diagnostic.async_queue.dropped":
         this.enqueue("monitor.events_dropped", { count: evt.droppedEvents, reason: "openclaw_diagnostic_queue", queueDepth: evt.queueLength }, "critical", evt.ts); break;
+      default:
+        // Defensive passthrough: if a future OpenClaw build emits memory.*
+        // diagnostic events, record them as raw memory events so the daemon
+        // can consume them without a plugin update. Today the memory host
+        // events live in the JSONL audit log, which the daemon reads directly.
+        if (typeof evt.type === "string" && evt.type.startsWith("memory.")) {
+          const pick = (...keys) => Object.fromEntries(keys.map((k) => [k, evt[k]]).filter(([, v]) => v !== undefined && v !== null));
+          this.enqueue("memory.event", { ...base, memoryEventType: evt.type, ...pick("query", "resultCount", "reason", "phase", "applied", "lineCount", "durationMs", "errorCategory") }, "normal", evt.ts);
+        }
+        break;
     }
   }
 

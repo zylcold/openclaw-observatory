@@ -108,7 +108,7 @@ func Open(path string) (*Repository, error) {
 	for _, migration := range []struct {
 		version int
 		sql     string
-	}{{2, schemaV2}, {3, schemaV3}, {4, schemaV4}, {5, schemaV5}, {6, schemaV6}, {7, schemaV7}, {8, schemaV8}} {
+	}{{2, schemaV2}, {3, schemaV3}, {4, schemaV4}, {5, schemaV5}, {6, schemaV6}, {7, schemaV7}, {8, schemaV8}, {10, schemaV10}} {
 		if err := applyMigration(db, migration.version, migration.sql); err != nil {
 			db.Close()
 			return nil, err
@@ -434,6 +434,8 @@ func reduce(ctx context.Context, tx *sql.Tx, e event.Event) error {
 			event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"), event.String(p, "fromProvider"),
 			event.String(p, "fromModel"), event.String(p, "toProvider"), event.String(p, "toModel"), positiveInt(p, "attempt", 1), event.String(p, "reason"), t)
 		return err
+	case "embedding.started", "embedding.completed", "embedding.failed":
+		return reduceEmbedding(ctx, tx, e, p, t)
 	case "tool.started", "tool.completed", "tool.failed":
 		return reduceTool(ctx, tx, e, p, t, false)
 	case "mcp.started", "mcp.completed", "mcp.failed":
@@ -520,6 +522,28 @@ func reduceTool(ctx context.Context, tx *sql.Tx, e event.Event, p map[string]any
 		e.InstanceID, id, event.String(p, "runId"), event.String(p, "sessionId"), event.String(p, "toolName"), event.String(p, "toolSource"), event.String(p, "toolOwner"), status,
 		nullTime(started, t), nullTime(!started, t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"),
 		event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"), positiveInt(p, "attempt", 1), event.String(p, "retryReason"))
+	return err
+}
+
+func reduceEmbedding(ctx context.Context, tx *sql.Tx, e event.Event, p map[string]any, t string) error {
+	id := event.String(p, "callId")
+	if id == "" {
+		return nil
+	}
+	status := statusFor(e.EventType)
+	started := strings.HasSuffix(e.EventType, ".started")
+	_, err := tx.ExecContext(ctx, `INSERT INTO embedding_calls(instance_id,call_id,run_id,session_id,agent_id,provider,model,api,status,started_at,ended_at,duration_ms,error_category,trace_id,span_id,parent_span_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(instance_id,call_id) DO UPDATE SET
+    run_id=COALESCE(NULLIF(excluded.run_id,''),run_id),session_id=COALESCE(NULLIF(excluded.session_id,''),session_id),
+    agent_id=COALESCE(NULLIF(excluded.agent_id,''),agent_id),provider=COALESCE(NULLIF(excluded.provider,''),provider),model=COALESCE(NULLIF(excluded.model,''),model),
+    api=COALESCE(NULLIF(excluded.api,''),api),
+    status=CASE WHEN excluded.status='active' AND status!='unknown' THEN status ELSE excluded.status END,
+    started_at=COALESCE(started_at,excluded.started_at),ended_at=COALESCE(excluded.ended_at,ended_at),
+    duration_ms=COALESCE(excluded.duration_ms,duration_ms),error_category=COALESCE(NULLIF(excluded.error_category,''),error_category),
+    trace_id=COALESCE(NULLIF(excluded.trace_id,''),trace_id),span_id=COALESCE(NULLIF(excluded.span_id,''),span_id),parent_span_id=COALESCE(NULLIF(excluded.parent_span_id,''),parent_span_id)`,
+		e.InstanceID, id, event.String(p, "runId"), event.String(p, "sessionId"), event.String(p, "agentId"), event.String(p, "provider"), event.String(p, "model"), event.String(p, "api"), status,
+		nullTime(started, t), nullTime(!started, t), nullFloat(p, "durationMs"), event.String(p, "errorCategory"),
+		event.String(p, "traceId"), event.String(p, "spanId"), event.String(p, "parentSpanId"))
 	return err
 }
 

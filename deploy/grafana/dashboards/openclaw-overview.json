@@ -1212,7 +1212,348 @@
           "sort": "desc"
         }
       }
+    },
+{
+  "id": 600,
+  "type": "row",
+  "title": "Memory & Embedding",
+  "collapsed": false,
+  "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 87
+  },
+  "panels": []
+},
+{
+  "id": 601,
+  "type": "timeseries",
+  "title": "Memory Recall Activity",
+  "datasource": {
+    "type": "prometheus",
+    "uid": "$datasource"
+  },
+  "gridPos": {
+    "h": 6,
+    "w": 12,
+    "x": 0,
+    "y": 88
+  },
+  "targets": [
+    {
+      "refId": "A",
+      "expr": "rate(openclaw_memory_recall_calls_total{agentId=~\"$agent\"}[$__rate_interval])",
+      "legendFormat": "recalls"
+    },
+    {
+      "refId": "B",
+      "expr": "rate(openclaw_memory_recall_hits_total{agentId=~\"$agent\"}[$__rate_interval])",
+      "legendFormat": "hits"
+    },
+    {
+      "refId": "C",
+      "expr": "rate(openclaw_memory_recall_misses_total{agentId=~\"$agent\"}[$__rate_interval])",
+      "legendFormat": "misses"
+    },
+    {
+      "refId": "D",
+      "expr": "rate(openclaw_memory_recall_skipped_total{agentId=~\"$agent\"}[$__rate_interval])",
+      "legendFormat": "skipped"
     }
+  ],
+  "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+  }
+},
+{
+  "id": 602,
+  "type": "timeseries",
+  "title": "Memory Recall Turns by Source",
+  "datasource": {
+    "type": "prometheus",
+    "uid": "$datasource"
+  },
+  "gridPos": {
+    "h": 6,
+    "w": 12,
+    "x": 12,
+    "y": 88
+  },
+  "targets": [
+    {
+      "refId": "A",
+      "expr": "sum by (source) (rate(openclaw_memory_recall_turns_by_source_total{agentId=~\"$agent\"}[$__rate_interval]))",
+      "legendFormat": "{{source}}"
+    }
+  ],
+  "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+  }
+},
+{
+  "id": 603,
+  "type": "timeseries",
+  "title": "Memory Recall & Embedding Latency (p50/p95)",
+  "datasource": {
+    "type": "prometheus",
+    "uid": "$datasource"
+  },
+  "gridPos": {
+    "h": 6,
+    "w": 12,
+    "x": 0,
+    "y": 94
+  },
+  "targets": [
+    {
+      "refId": "A",
+      "expr": "openclaw_memory_recall_latency_seconds{agentId=~\"$agent\", quantile=~\"p50|p95\"}",
+      "legendFormat": "recall {{agentId}} {{quantile}}"
+    },
+    {
+      "refId": "B",
+      "expr": "openclaw_embedding_latency_seconds{agentId=~\"$agent\", quantile=~\"p50|p95\"}",
+      "legendFormat": "embed {{agentId}} {{quantile}}"
+    }
+  ],
+  "fieldConfig": {
+    "defaults": {
+      "unit": "s"
+    },
+    "overrides": []
+  }
+},
+{
+  "id": 604,
+  "type": "timeseries",
+  "title": "Memory Index Freshness & Freelist",
+  "datasource": {
+    "type": "prometheus",
+    "uid": "$datasource"
+  },
+  "gridPos": {
+    "h": 6,
+    "w": 12,
+    "x": 12,
+    "y": 94
+  },
+  "targets": [
+    {
+      "refId": "A",
+      "expr": "openclaw_memory_index_freshness_seconds{agentId=~\"$agent\"}",
+      "legendFormat": "freshness {{agentId}}"
+    },
+    {
+      "refId": "B",
+      "expr": "openclaw_memory_index_freelist_ratio{agentId=~\"$agent\"}",
+      "legendFormat": "freelist {{agentId}}"
+    }
+  ],
+  "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+  }
+},
+{
+  "id": 605,
+  "type": "stat",
+  "title": "Embedding Provider Up",
+  "datasource": {
+    "type": "prometheus",
+    "uid": "$datasource"
+  },
+  "gridPos": {
+    "h": 4,
+    "w": 4,
+    "x": 0,
+    "y": 100
+  },
+  "targets": [
+    {
+      "refId": "A",
+      "expr": "max(openclaw_embedding_provider_up)",
+      "legendFormat": "LM Studio",
+      "instant": true
+    }
+  ],
+  "fieldConfig": {
+    "defaults": {
+      "mappings": [
+        {
+          "type": "value",
+          "options": {
+            "0": [
+              "DOWN",
+              "red"
+            ],
+            "1": [
+              "UP",
+              "green"
+            ]
+          }
+        }
+      ],
+      "color": {
+        "mode": "thresholds"
+      },
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "DOWN",
+            "value": "red"
+          },
+          {
+            "color": "UP",
+            "value": "green"
+          }
+        ]
+      }
+    },
+    "overrides": []
+  }
+},
+{
+  "id": 606,
+  "type": "stat",
+  "title": "Embedding Provider Models",
+  "datasource": {
+    "type": "prometheus",
+    "uid": "$datasource"
+  },
+  "gridPos": {
+    "h": 4,
+    "w": 4,
+    "x": 4,
+    "y": 100
+  },
+  "targets": [
+    {
+      "refId": "A",
+      "expr": "max(openclaw_embedding_provider_models)",
+      "legendFormat": "models",
+      "instant": true
+    }
+  ],
+  "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+  }
+},
+{
+  "id": 607,
+  "type": "stat",
+  "title": "Memory Index Dirty",
+  "datasource": {
+    "type": "prometheus",
+    "uid": "$datasource"
+  },
+  "gridPos": {
+    "h": 4,
+    "w": 4,
+    "x": 8,
+    "y": 100
+  },
+  "targets": [
+    {
+      "refId": "A",
+      "expr": "max(openclaw_memory_index_dirty{agentId=~\"$agent\"})",
+      "legendFormat": "dirty",
+      "instant": true
+    }
+  ],
+  "fieldConfig": {
+    "defaults": {
+      "mappings": [
+        {
+          "type": "value",
+          "options": {
+            "0": [
+              "CLEAN",
+              "green"
+            ],
+            "1": [
+              "DIRTY",
+              "red"
+            ]
+          }
+        }
+      ],
+      "color": {
+        "mode": "thresholds"
+      },
+      "thresholds": {
+        "mode": "absolute",
+        "steps": [
+          {
+            "color": "CLEAN",
+            "value": "green"
+          },
+          {
+            "color": "DIRTY",
+            "value": "red"
+          }
+        ]
+      }
+    },
+    "overrides": []
+  }
+},
+{
+  "id": 608,
+  "type": "bargauge",
+  "title": "Memory Index Files by Agent",
+  "datasource": {
+    "type": "prometheus",
+    "uid": "$datasource"
+  },
+  "gridPos": {
+    "h": 4,
+    "w": 6,
+    "x": 12,
+    "y": 100
+  },
+  "targets": [
+    {
+      "refId": "A",
+      "expr": "openclaw_memory_index_files{agentId=~\"$agent\"}",
+      "legendFormat": "{{agentId}}"
+    }
+  ],
+  "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+  }
+},
+{
+  "id": 609,
+  "type": "bargauge",
+  "title": "Memory Index Chunks by Agent",
+  "datasource": {
+    "type": "prometheus",
+    "uid": "$datasource"
+  },
+  "gridPos": {
+    "h": 4,
+    "w": 6,
+    "x": 18,
+    "y": 100
+  },
+  "targets": [
+    {
+      "refId": "A",
+      "expr": "openclaw_memory_index_chunks{agentId=~\"$agent\"}",
+      "legendFormat": "{{agentId}}"
+    }
+  ],
+  "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+  }
+}
   ],
   "refresh": "30s",
   "schemaVersion": 41,
@@ -1325,5 +1666,5 @@
   "timezone": "browser",
   "title": "OpenClaw Observatory Overview",
   "uid": "openclaw-observatory",
-  "version": 3
+  "version": 4
 }
