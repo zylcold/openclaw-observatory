@@ -1,5 +1,5 @@
 import "./styles.css";
-import { loadDashboard, loadSession, loadSummary } from "./api.js";
+import { loadDashboard, loadMemory, loadSession, loadSummary } from "./api.js";
 import { loadConfig, resetConfig, saveConfig } from "./config.js";
 import { destroyCharts, setChartAnimation } from "./charts.js";
 import {
@@ -249,14 +249,34 @@ async function refresh({ keepRange = false, automatic = false, forceRender = fal
   }
   try {
     void refreshSummary();
-    data = await loadDashboard({ ...filters, status: viewFilters.status });
-    if (liveSummary) mergeLiveSummary(data, liveSummary);
-    connectionLost = false;
-    dataStale = false;
-    refreshFailures = 0;
-    lastDashboardRefreshAt = Date.now();
-    const exists = data.sessions.some((s) => s.sessionId === sessionDetail?.sessionId);
-    if (!exists) sessionDetail = data.sessions[0] ? await loadSession(data.sessions[0].sessionId) : null;
+    const incoming = await loadDashboard({ ...filters, status: viewFilters.status });
+    // Server-side warming: the current cadence window is still being built for
+    // the first time. Keep the last good snapshot on screen instead of
+    // replacing it with the empty warming placeholder.
+    if (incoming?.degraded?.dashboard === "warming" && background && data?.degraded?.dashboard !== "warming") {
+      if (liveSummary) mergeLiveSummary(data, liveSummary);
+      connectionLost = false;
+      dataStale = false;
+      refreshFailures = 0;
+      lastDashboardRefreshAt = Date.now();
+    } else {
+      data = incoming;
+      if (liveSummary) mergeLiveSummary(data, liveSummary);
+      connectionLost = false;
+      dataStale = false;
+      refreshFailures = 0;
+      lastDashboardRefreshAt = Date.now();
+      const exists = data.sessions.some((s) => s.sessionId === sessionDetail?.sessionId);
+      if (!exists) sessionDetail = data.sessions[0] ? await loadSession(data.sessions[0].sessionId) : null;
+    }
+    // Memory metrics are a lightweight sidecar; a failure must never degrade
+    // the main dashboard.
+    try {
+      const memory = await loadMemory();
+      if (data) data.memory = memory;
+    } catch {
+      data.memory = data?.memory || null;
+    }
   } catch (reason) {
     error = reason instanceof Error ? reason.message : String(reason);
     connectionLost = true;

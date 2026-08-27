@@ -49,6 +49,7 @@ type Server struct {
 	dashboardCacheMu sync.Mutex
 	dashboardCache   map[string]*dashboardCacheEntry
 	dashboardStats   dashboardCacheStats
+	dashboardLastBody map[string][]byte
 	statusCache      swrResponseCache
 	metricsCache     swrResponseCache
 
@@ -74,6 +75,7 @@ func New(repo *storage.Repository, logger *slog.Logger) *Server {
 		backpressured:  make(map[string]bool),
 		prices:         pricing.NewCatalog(),
 		dashboardCache: make(map[string]*dashboardCacheEntry),
+		dashboardLastBody: make(map[string][]byte),
 		liveSummary:    liveSummary{instances: make(map[string]liveInstance)},
 	}
 	s.ready.Store(true)
@@ -128,6 +130,7 @@ func (s *Server) PublicHandler() http.Handler {
 	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.HandleFunc("GET /metrics/full", s.metricsUncached)
 	mux.HandleFunc("GET /api/v1/summary", s.summary)
+	mux.HandleFunc("GET /api/v1/memory", s.memorySnapshot)
 	mux.HandleFunc("GET /api/v1/status", s.status)
 	mux.HandleFunc("GET /api/v1/status/full", s.statusUncached)
 	mux.HandleFunc("GET /api/v1/dashboard", s.dashboard)
@@ -311,6 +314,91 @@ func (s *Server) statusUncached(w http.ResponseWriter, r *http.Request) {
 // while a SQLite dashboard query is queued behind the single writer.
 func (s *Server) summary(w http.ResponseWriter, _ *http.Request) {
 	data(w, s.liveSummaryData())
+}
+
+// memorySnapshot serves the lightweight live memory view: per-agent recall and
+// index health from the memory manager (memory reads only) plus recent
+// embedding-call aggregates from the small embedding_calls table. It mirrors
+// the summary endpoint's role — safe for frequent polling because it never
+// runs the heavy dashboard queries.
+func (s *Server) memorySnapshot(w http.ResponseWriter, _ *http.Request) {
+	if s.memory == nil {
+		data(w, map[string]any{
+			"generatedAt": time.Now().UTC(),
+			"agents":      []memory.AgentMemorySnapshot{},
+			"provider":    memory.ProviderMemorySnapshot{},
+			"embedding":   emptyEmbeddingSummary(),
+		})
+		return
+	}
+	snap := s.memory.Snapshot()
+	embedding, err := s.analyticsRepo.EmbeddingMetrics(context.Background())
+	if err != nil {
+		s.log.Warn("memory snapshot: embedding metrics unavailable", "error", err)
+		embedding = storage.EmbeddingMetricsSnapshot{Durations: map[string][]float64{}}
+	}
+	data(w, map[string]any{
+		"generatedAt": snap.GeneratedAt,
+		"agents":      snap.Agents,
+		"provider":    snap.Provider,
+		"embedding":   embeddingSummary(embedding),
+	})
+}
+
+func emptyEmbeddingSummary() map[string]any {
+	return map[string]any{
+		"requests": map[string]any{},
+		"failures": []map[string]any{},
+		"latency":  map[string]any{},
+		"timeouts": map[string]any{},
+	}
+}
+
+func embeddingSummary(embedding storage.EmbeddingMetricsSnapshot) map[string]any {
+	requests := map[string]any{}
+	for _, row := range embedding.ByStatus {
+		agent := row.Labels["agentId"]
+		status := row.Labels["status"]
+		m, _ := requests[agent].(map[string]any)
+		if m == nil {
+			m = map[string]any{}
+			requests[agent] = m
+		}
+		m[status] = row.Value
+	}
+	failures := make([]map[string]any, 0, len(embedding.Failures))
+	for _, row := range embedding.Failures {
+		failures = append(failures, map[string]any{
+			"agentId": row.Labels["agentId"],
+			"reason":  row.Labels["reason"],
+			"count":   row.Value,
+		})
+	}
+	latency := map[string]any{}
+	timeouts := map[string]any{}
+	for agent, durations := range embedding.Durations {
+		p50, p95 := memory.Quantiles(durations)
+		latency[agent] = map[string]any{"p50": p50, "p95": p95}
+	}
+	for _, row := range embedding.Failures {
+		if strings.Contains(strings.ToLower(row.Labels["reason"]), "timeout") {
+			agent := row.Labels["agentId"]
+			timeouts[agent] = numberValue(timeouts[agent]) + row.Value
+		}
+	}
+	return map[string]any{
+		"requests": requests,
+		"failures": failures,
+		"latency":  latency,
+		"timeouts": timeouts,
+	}
+}
+
+func numberValue(v any) float64 {
+	if n, ok := v.(float64); ok {
+		return n
+	}
+	return 0
 }
 
 func (s *Server) statusData(ctx context.Context) (map[string]any, error) {

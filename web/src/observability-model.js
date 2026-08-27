@@ -40,6 +40,14 @@ export const OBSERVABILITY_DOMAINS = [
     phase: "P1",
   },
   {
+    id: "memory",
+    label: "Memory",
+    name: "记忆指标",
+    glyph: "忆",
+    description: "记忆召回、索引健康与嵌入服务（LM Studio）",
+    phase: "P2",
+  },
+  {
     id: "infrastructure",
     label: "Infrastructure",
     name: "基础设施",

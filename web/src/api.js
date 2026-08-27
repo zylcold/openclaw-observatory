@@ -66,4 +66,8 @@ export async function loadDashboard(filters) {
 
 export const loadSummary = () => get("/summary", {}, { timeoutMs: 750, attempts: 1 });
 
+// Memory metrics are served from in-memory state (plus the tiny embedding_calls
+// cache), so this endpoint is safe to poll at the normal dashboard cadence.
+export const loadMemory = () => get("/memory", {}, { timeoutMs: 3_000, attempts: 1 });
+
 export const loadSession = (sessionId) => get(`/sessions/${encodeURIComponent(sessionId)}`);

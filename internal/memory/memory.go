@@ -123,6 +123,54 @@ type MetricGroup struct {
 	Rows []storage.MetricRow
 }
 
+// AgentMemorySnapshot is the JSON-friendly per-agent view served by the
+// lightweight /api/v1/memory endpoint. Recall counters are cumulative (they
+// persist across daemon restarts); index fields come from the latest 60s
+// collection cycle.
+type AgentMemorySnapshot struct {
+	Name             string            `json:"name"`
+	Recalls          uint64            `json:"recalls"`
+	Hits             uint64            `json:"hits"`
+	Misses           uint64            `json:"misses"`
+	Skipped          uint64            `json:"skipped"`
+	ActiveTurns      uint64            `json:"activeTurns"`
+	BackgroundTurns  uint64            `json:"backgroundTurns"`
+	Promotions       uint64            `json:"promotions"`
+	PromotionEntries uint64            `json:"promotionEntries"`
+	DreamLines       uint64            `json:"dreamLines"`
+	DreamsFailed     uint64            `json:"dreamsFailed"`
+	DreamPhases      map[string]uint64 `json:"dreamPhases"`
+	IndexFiles       int64             `json:"indexFiles"`
+	IndexChunks      int64             `json:"indexChunks"`
+	IndexDirty       bool              `json:"indexDirty"`
+	IndexDirtyKnown  bool              `json:"indexDirtyKnown"`
+	IndexRevision    int64             `json:"indexRevision"`
+	IndexDBBytes     int64             `json:"indexDBBytes"`
+	IndexWALBytes    int64             `json:"indexWALBytes"`
+	IndexFreelist    float64           `json:"indexFreelistRatio"`
+	IndexFreshness   float64           `json:"indexFreshnessSeconds"`
+	IndexLastIndexed float64           `json:"indexLastIndexedAtUnix"`
+	IndexState       int               `json:"indexState"`
+	IndexSampledAt   float64           `json:"indexSampledAtUnix"`
+}
+
+// ProviderMemorySnapshot is the JSON-friendly embedding provider probe view.
+type ProviderMemorySnapshot struct {
+	Up                   bool    `json:"up"`
+	ModelCount           int64   `json:"models"`
+	ProbeDurationSeconds float64 `json:"probeDurationSeconds"`
+	ConsecutiveFailures  uint64  `json:"consecutiveFailures"`
+	LastSuccessAtUnix    float64 `json:"lastSuccessAtUnix"`
+}
+
+// MemorySnapshot is the complete in-memory view for /api/v1/memory. Building
+// it never touches SQLite; everything is read under the manager lock.
+type MemorySnapshot struct {
+	GeneratedAt time.Time              `json:"generatedAt"`
+	Agents      []AgentMemorySnapshot  `json:"agents"`
+	Provider    ProviderMemorySnapshot `json:"provider"`
+}
+
 type cliAgentStatus struct {
 	AgentID string `json:"agentId"`
 	Status  struct {
@@ -798,6 +846,66 @@ func (m *Manager) ProbeMetrics() []MetricGroup {
 		{Name: "openclaw_embedding_provider_probe_consecutive_failures", Type: "gauge", Help: "Consecutive failed embedding provider probes.", Rows: []storage.MetricRow{{Labels: labels(), Value: float64(m.probe.ConsecutiveFailures)}}},
 		{Name: "openclaw_embedding_provider_probe_last_success_unixtime", Type: "gauge", Help: "Unix timestamp of the latest successful embedding provider probe.", Rows: []storage.MetricRow{{Labels: labels(), Value: lastSuccess}}},
 	}
+}
+
+// Snapshot builds the lightweight in-memory view for the /api/v1/memory
+// endpoint. It never touches SQLite; recall counters and index health are read
+// under the manager lock, so it is safe to poll frequently.
+func (m *Manager) Snapshot() MemorySnapshot {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	now := time.Now().UTC()
+	snap := MemorySnapshot{GeneratedAt: now, Agents: make([]AgentMemorySnapshot, 0, len(m.agents))}
+	for _, a := range m.agents {
+		st := m.recalls[a.Name]
+		if st == nil {
+			st = &recallStats{DreamPhases: map[string]uint64{}}
+		}
+		phases := make(map[string]uint64, len(st.DreamPhases))
+		for phase, n := range st.DreamPhases {
+			phases[phase] = n
+		}
+		agent := AgentMemorySnapshot{
+			Name: a.Name, Recalls: st.Recalls, Hits: st.Hits, Misses: st.Misses, Skipped: st.Skipped,
+			ActiveTurns: st.ActiveTurns, BackgroundTurns: st.BackgroundTurns,
+			Promotions: st.Promotions, PromotionEntries: st.PromotionApplied,
+			DreamLines: st.DreamLines, DreamsFailed: st.DreamsFailed, DreamPhases: phases,
+		}
+		if idx, ok := m.index[a.Name]; ok {
+			agent.IndexFiles = idx.Files
+			agent.IndexChunks = idx.Chunks
+			agent.IndexRevision = idx.Revision
+			agent.IndexDBBytes = idx.DBSizeBytes
+			agent.IndexWALBytes = idx.WALBytes
+			if idx.PageCount > 0 {
+				agent.IndexFreelist = float64(idx.FreeListPages) / float64(idx.PageCount)
+			}
+			if idx.HasIndex {
+				agent.IndexLastIndexed = float64(idx.LastIndexedAt.Unix())
+				fresh := now.Sub(idx.LastIndexedAt).Seconds()
+				if fresh < 0 {
+					fresh = 0
+				}
+				agent.IndexFreshness = fresh
+			}
+			agent.IndexState = idx.State
+			agent.IndexSampledAt = float64(idx.SampledAt.Unix())
+			if idx.Dirty != nil {
+				agent.IndexDirty = *idx.Dirty
+				agent.IndexDirtyKnown = true
+			}
+		}
+		snap.Agents = append(snap.Agents, agent)
+	}
+	probe := m.probe
+	snap.Provider.Up = probe.Up
+	snap.Provider.ModelCount = probe.ModelCount
+	snap.Provider.ProbeDurationSeconds = probe.DurationSeconds
+	snap.Provider.ConsecutiveFailures = probe.ConsecutiveFailures
+	if probe.LastSuccessAt != nil {
+		snap.Provider.LastSuccessAtUnix = float64(probe.LastSuccessAt.Unix())
+	}
+	return snap
 }
 
 // ---------------------------------------------------------------------------

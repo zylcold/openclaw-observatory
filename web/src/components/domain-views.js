@@ -352,6 +352,7 @@ export function domainSummaryHTML(domain, data, config, sessionDetail, kpiEditor
   if (domain === "sessions") return sessionsSummary(data);
   if (domain === "models") return modelSummary(data);
   if (domain === "tools") return toolSummary(data);
+  if (domain === "memory") return memoryProvider(data) + memoryRecallSummary(data);
   if (domain === "infrastructure") return infrastructureSummary(data);
   if (domain === "errors") return errorsSummary(data, alerts);
   return moduleHTML("overview", data, config, sessionDetail, kpiEditorOpen, { draggable: false, sectionKpiEditor });
@@ -370,6 +371,109 @@ export function domainDetailHTML(domain, data, config, sessionDetail, kpiEditorO
   }
   if (domain === "models") return modelTable(data) + costAttribution(data, config);
   if (domain === "tools") return toolHeatmap(data) + toolTable(data);
+  if (domain === "memory") return memoryRecallTable(data) + memoryIndexTable(data) + memoryEmbeddingTable(data);
   if (domain === "errors") return alertCenter(alerts) + errorsTable(data);
   return "";
+}
+
+function formatAge(seconds) {
+  const s = Number(seconds || 0);
+  if (!Number.isFinite(s) || s <= 0) return "—";
+  if (s < 120) return `${Math.round(s)}s`;
+  const m = s / 60;
+  if (m < 120) return `${Math.round(m)}m`;
+  const h = m / 60;
+  if (h < 48) return `${Number(h.toFixed(1))}h`;
+  return `${Number((h / 24).toFixed(1))}d`;
+}
+
+function memoryProvider(data) {
+  const provider = data?.memory?.provider || {};
+  const up = provider.up === true;
+  return panel("domain-memory-provider", "嵌入服务（LM Studio）", metricStrip([
+    { label: "Provider", value: up ? "正常" : "离线", note: up ? `${num(provider.models)} 个模型` : "探测 /v1/models 未通过", level: up ? "" : "critical" },
+    { label: "探测耗时", value: provider.probeDurationSeconds != null ? `${Number(provider.probeDurationSeconds).toFixed(2)}s` : "—", note: "最近一次探测" },
+    { label: "连续失败", value: num(provider.consecutiveFailures), note: "累计失败次数", level: Number(provider.consecutiveFailures || 0) ? "warning" : "" },
+    { label: "最近成功", value: provider.lastSuccessAtUnix ? esc(shortTime(new Date(provider.lastSuccessAtUnix * 1000))) : "—", note: "探测成功时间" },
+  ]), "记忆召回与嵌入依赖该服务", "domain-full");
+}
+
+function memoryRecallSummary(data) {
+  const agents = data?.memory?.agents || [];
+  const recalls = agents.reduce((t, a) => t + Number(a.recalls || 0), 0);
+  const hits = agents.reduce((t, a) => t + Number(a.hits || 0), 0);
+  const misses = agents.reduce((t, a) => t + Number(a.misses || 0), 0);
+  const skipped = agents.reduce((t, a) => t + Number(a.skipped || 0), 0);
+  const promotions = agents.reduce((t, a) => t + Number(a.promotions || 0), 0);
+  const dreams = agents.reduce((t, a) => t + Object.values(a.dreamPhases || {}).reduce((x, n) => x + Number(n || 0), 0), 0);
+  const hitRate = recalls ? (100 * hits / recalls).toFixed(1) : "0.0";
+  return panel("domain-memory-recall-summary", "记忆召回", metricStrip([
+    { label: "召回", value: compact(recalls), note: `${agents.length} 个 Agent` },
+    { label: "命中", value: compact(hits), note: "resultCount > 0" },
+    { label: "未命中 (NONE)", value: compact(misses), note: "空结果召回" },
+    { label: "跳过", value: compact(skipped), note: "非短期记忆路径" },
+    { label: "命中率", value: `${hitRate}%`, note: "累计" },
+    { label: "提升", value: compact(promotions), note: "promotion.applied" },
+    { label: "梦境", value: compact(dreams), note: "dream.completed" },
+  ]), "事件日志直读 · 跨重启累计", "domain-full");
+}
+
+function memoryRecallTable(data) {
+  const agents = data?.memory?.agents || [];
+  const rows = agents.map((agent) => {
+    const hitRate = Number(agent.recalls) ? (100 * Number(agent.hits) / Number(agent.recalls)).toFixed(1) : "0.0";
+    return `<tr>
+      <td><b>${esc(agent.name)}</b></td>
+      <td>${num(agent.recalls)}</td><td>${num(agent.hits)}</td><td>${num(agent.misses)}</td><td>${num(agent.skipped)}</td>
+      <td>${hitRate}%</td>
+      <td>${num(agent.activeTurns)} <span class="muted">/ ${num(agent.backgroundTurns)}</span></td>
+      <td>${num(agent.promotions)}</td><td>${num(agent.promotionEntries)}</td>
+    </tr>`;
+  });
+  return panel("domain-memory-recall-table", "Agent 召回明细", rows.length ? table(
+    ["Agent", "调用", "命中", "未命中", "跳过", "命中率", "回合(实时/后台)", "提升次数", "提升条目"],
+    rows,
+  ) : empty(), "累计计数", "domain-full");
+}
+
+function memoryIndexTable(data) {
+  const agents = data?.memory?.agents || [];
+  const rows = agents.map((agent) => {
+    const dirty = agent.indexDirtyKnown ? (agent.indexDirty ? "是" : "否") : "—";
+    return `<tr>
+      <td><b>${esc(agent.name)}</b></td>
+      <td>${num(agent.indexFiles)}</td><td>${num(agent.indexChunks)}</td>
+      <td>${dirty}</td>
+      <td>${bytes(agent.indexDBBytes)}</td>
+      <td>${(100 * Number(agent.indexFreelistRatio || 0)).toFixed(1)}%</td>
+      <td>${formatAge(agent.indexFreshnessSeconds)}</td>
+      <td>${num(agent.indexRevision)}</td>
+    </tr>`;
+  });
+  return panel("domain-memory-index-table", "索引健康", rows.length ? table(
+    ["Agent", "文件", "Chunk", "Dirty", "DB 大小", "FreeList", "最新索引距今", "Revision"],
+    rows,
+  ) : empty(), "60s 周期采样 · 中文化展示", "domain-full");
+}
+
+function memoryEmbeddingTable(data) {
+  const embedding = data?.memory?.embedding || {};
+  const latency = embedding.latency || {};
+  const timeouts = embedding.timeouts || {};
+  const keys = [...new Set([...Object.keys(latency), ...Object.keys(timeouts)])].sort();
+  const rows = keys.map((agent) => {
+    const point = latency[agent];
+    return `<tr>
+      <td><b>${esc(agent)}</b></td>
+      <td>${num(embedding.requests?.[agent]?.completed || 0)}</td>
+      <td>${num(embedding.requests?.[agent]?.failed || 0)}</td>
+      <td>${ms(point?.p50 != null ? Number(point.p50) * 1000 : 0)}</td>
+      <td>${ms(point?.p95 != null ? Number(point.p95) * 1000 : 0)}</td>
+      <td>${num(timeouts[agent] || 0)}</td>
+    </tr>`;
+  });
+  return panel("domain-memory-embedding", "嵌入调用统计", rows.length ? table(
+    ["Agent", "成功", "失败", "P50", "P95", "超时"],
+    rows,
+  ) : empty("暂无 embedding 调用统计（OpenClaw 当前不通过 diagnostics 上报 api=embedding 模型调用）"), "来自 embedding_calls 表", "domain-full");
 }
