@@ -5,6 +5,7 @@ export const MODULES = [
   ["sessions", "会话瀑布图"],
   ["errors_cost", "错误聚合与成本"],
   ["activity", "Subagent / MCP 调用"],
+  ["memory", "记忆指标"],
 ];
 
 // All available KPI metrics for the overview module.
