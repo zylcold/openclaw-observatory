@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ const (
 type dashboardCacheEntry struct {
 	body        []byte
 	data        map[string]any
+	bucket      int64
 	freshUntil  time.Time
 	staleUntil  time.Time
 	nextRetryAt time.Time
@@ -275,7 +277,7 @@ func (s *Server) cachedDashboardSnapshot(ctx context.Context, key string, o stor
 	s.dashboardCacheMu.Unlock()
 
 	if flight != nil {
-		timer := time.NewTimer(dashboardSnapshotColdWait)
+		timer := time.NewTimer(s.dashboardColdWait())
 		defer timer.Stop()
 		select {
 		case <-flight:
@@ -291,11 +293,36 @@ func (s *Server) cachedDashboardSnapshot(ctx context.Context, key string, o stor
 		}
 	}
 	s.dashboardStats.add(&s.dashboardStats.coldFallbacks)
+	if body, ok := s.dashboardLastBody[strconv.FormatInt(bucketSeconds, 10)]; ok && len(body) > 0 {
+		return body, "STALE"
+	}
 	return mustJSON(map[string]any{"data": s.emptyDashboard(o, bucket, bucketSeconds, "warming")}), "WARMING"
+}
+
+// dashboardColdWait bounds how long a cold request waits for its snapshot
+// build. It is derived from the measured average refresh duration so the first
+// request for a cache key typically returns real data instead of a warming
+// placeholder, while still bounding the request's worst-case latency.
+func (s *Server) dashboardColdWait() time.Duration {
+	stats := s.dashboardStats.snapshot()
+	if stats.Refreshes == 0 {
+		return dashboardSnapshotColdWait
+	}
+	avgSeconds := stats.RefreshSeconds / float64(stats.Refreshes)
+	wait := time.Duration((avgSeconds + 1) * float64(time.Second))
+	const maxWait = 8 * time.Second
+	if wait < dashboardSnapshotColdWait {
+		wait = dashboardSnapshotColdWait
+	}
+	if wait > maxWait {
+		wait = maxWait
+	}
+	return wait
 }
 
 func (s *Server) startDashboardRefreshLocked(key string, entry *dashboardCacheEntry, o storage.ListOptions, bucket string, bucketSeconds int64) {
 	entry.inFlight = make(chan struct{})
+	entry.bucket = bucketSeconds
 	fallback := entry.data
 	go func() {
 		started := time.Now()
@@ -319,6 +346,11 @@ func (s *Server) finishDashboardRefresh(key string, entry *dashboardCacheEntry, 
 		entry.staleUntil = now.Add(dashboardSnapshotStaleTTL)
 		entry.nextRetryAt = time.Time{}
 		entry.lastErr = nil
+		if entry.bucket > 0 {
+			// Keep the most recent successful body per bucket so a cadence or
+			// filter change never briefly blanks the dashboard to "warming".
+			s.dashboardLastBody[strconv.FormatInt(entry.bucket, 10)] = body
+		}
 	} else {
 		entry.lastErr = err
 		entry.nextRetryAt = now.Add(dashboardSnapshotRetryDelay)
