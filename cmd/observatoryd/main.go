@@ -45,6 +45,8 @@ func run() error {
 	retentionEvents := flag.Int("retention-events-days", 7, "raw events retention period in days (0 = unlimited)")
 	retentionSamples := flag.Int("retention-samples-days", 30, "resource_samples retention period in days (0 = unlimited)")
 	retentionAll := flag.Int("retention-all-days", 0, "hard cap for projection tables in days (0 = disabled)")
+	retentionRollups300 := flag.Int("retention-rollups-300-days", 30, "trend_rollups bucket_seconds=300 retention window in days (0 = disabled)")
+	retentionRollups3600 := flag.Int("retention-rollups-3600-days", 90, "trend_rollups bucket_seconds=3600 retention window in days (0 = disabled)")
 	pricingRefresh := flag.Duration("pricing-refresh-interval", 6*time.Hour, "OpenRouter model pricing refresh interval (0 = disabled)")
 	pricingURL := flag.String("pricing-url", pricing.DefaultModelsURL, "OpenRouter-compatible model pricing endpoint")
 	gatewayHealthURL := flag.String("gateway-health-url", "http://127.0.0.1:18789/health", "OpenClaw Gateway health endpoint for active response probes")
@@ -107,9 +109,11 @@ func run() error {
 	ingestHTTP := &http.Server{Handler: srv.IngestHandler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	publicHTTP := &http.Server{Handler: srv.PublicHandler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
 	retentionJob := storage.NewRetentionJob(repo, storage.RetentionConfig{
-		RawEventsDays: *retentionEvents,
-		SamplesDays:   *retentionSamples,
-		AllDays:       *retentionAll,
+		RawEventsDays:   *retentionEvents,
+		SamplesDays:     *retentionSamples,
+		AllDays:         *retentionAll,
+		Rollups300Days:  *retentionRollups300,
+		Rollups3600Days: *retentionRollups3600,
 	}, logger)
 	stopRetention := retentionJob.Start()
 	defer stopRetention()
