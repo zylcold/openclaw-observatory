@@ -546,13 +546,23 @@ func (m *Manager) fetchCLIStatus() ([]cliAgentStatus, error) {
 		"LC_ALL=en_US.UTF-8",
 		"TMPDIR=/tmp",
 		m.cfg.OpenCLawBin, "memory", "status", "--json")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	// Capture stdout and stderr separately: openclaw 2026.8.1+ prints non-JSON
+	// diagnostics (e.g. "[sqlite/transaction] slow SQLite transaction hold")
+	// to stderr; CombinedOutput interleaved them into the JSON stream and broke
+	// parsing ("invalid character 's'..."). stdout alone is the JSON payload.
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("%v: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	var statuses []cliAgentStatus
-	if err := json.Unmarshal(out, &statuses); err != nil {
-		return nil, err
+	if err := json.Unmarshal(stdout.Bytes(), &statuses); err != nil {
+		head := strings.TrimSpace(stdout.String())
+		if len(head) > 200 {
+			head = head[:200]
+		}
+		return nil, fmt.Errorf("parse memory status stdout: %w; stdout head: %q; stderr: %q", err, head, strings.TrimSpace(stderr.String()))
 	}
 	return statuses, nil
 }
