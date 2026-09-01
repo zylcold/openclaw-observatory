@@ -18,7 +18,7 @@ import (
 const (
 	dashboardSnapshotFreshTTL       = time.Minute
 	dashboardSnapshotStaleTTL       = 5 * time.Minute
-	dashboardSnapshotRefreshTimeout = 25 * time.Second
+	dashboardSnapshotRefreshTimeout = 60 * time.Second
 	dashboardSnapshotColdWait       = 2 * time.Second
 	dashboardSnapshotRetryDelay     = 30 * time.Second
 	dashboardSnapshotMaxEntries     = 32
@@ -421,6 +421,26 @@ func dashboardSnapshotCacheKey(o storage.ListOptions, bucketSeconds int64) (stri
 	return key, cacheOptions
 }
 
+// costTrendOptions scopes the cost-trend module to the dashboard's requested
+// range. Windows of two days or less use hourly periods so short filters (1h/
+// 6h/24h) produce a readable trend instead of a single aggregate day bucket.
+// Requests without a parsable range fall back to the legacy rolling 7-day window.
+func costTrendOptions(o storage.ListOptions) (storage.ListOptions, string) {
+	from, fromErr := time.Parse(time.RFC3339, o.From)
+	to, toErr := time.Parse(time.RFC3339, o.To)
+	if fromErr == nil && toErr == nil && to.After(from) {
+		if to.Sub(from) <= 48*time.Hour {
+			return o, "hour"
+		}
+		return o, "day"
+	}
+	now := time.Now().UTC()
+	window := o
+	window.To = now.Format(time.RFC3339Nano)
+	window.From = now.AddDate(0, 0, -6).Format(time.RFC3339Nano)
+	return window, "day"
+}
+
 func dashboardSnapshotCadence(bucketSeconds int64) time.Duration {
 	switch {
 	case bucketSeconds <= 60:
@@ -465,10 +485,8 @@ func (s *Server) buildDashboardSnapshot(ctx context.Context, o storage.ListOptio
 	s.dashboardModule(ctx, payload, fallback, degraded, "mcpCalls", emptyRows(), func(ctx context.Context) (any, error) { return s.analyticsRepo.ListMCPCalls(ctx, o) })
 
 	now := time.Now().UTC()
-	cost7d := o
-	cost7d.To = now.Format(time.RFC3339Nano)
-	cost7d.From = now.AddDate(0, 0, -6).Format(time.RFC3339Nano)
-	s.dashboardModule(ctx, payload, fallback, degraded, "costTrends", emptyRows(), func(ctx context.Context) (any, error) { return s.analyticsRepo.CostTrends(ctx, cost7d, "day") })
+	costOpts, costPeriod := costTrendOptions(o)
+	s.dashboardModule(ctx, payload, fallback, degraded, "costTrends", emptyRows(), func(ctx context.Context) (any, error) { return s.analyticsRepo.CostTrends(ctx, costOpts, costPeriod) })
 	s.dashboardModule(ctx, payload, fallback, degraded, "costSummary", emptyCostSummary(), func(ctx context.Context) (any, error) { return s.analyticsRepo.CostSummary(ctx, o) })
 	cost30d := o
 	cost30d.To = now.Format(time.RFC3339Nano)

@@ -303,8 +303,11 @@ function costTrendsHTML(data, config, sectionKpiEditorOpen) {
   kpiHTML += "</div>";
   if (sectionKpiEditorOpen) kpiHTML += sectionKpiEditorHTML("cost_trends", config);
 
-  // Cost trend chart (full width)
-  var chartHTML = chart("cost-trend-chart", true);
+  // Cost trend chart (full width) — follows the top time-range filter
+  const trendWindow = data?.timeseries?.from && data?.timeseries?.to
+    ? ` · ${shortTime(data.timeseries.from)} ~ ${shortTime(data.timeseries.to)}`
+    : "";
+  var chartHTML = `<div class="instrumentation-note"><b>时间范围</b><span>成本趋势与 Cost by Model 跟随顶部筛选${trendWindow}</span></div>` + chart("cost-trend-chart", true);
 
   // Cost by model table from trends
   var modelRows = {};

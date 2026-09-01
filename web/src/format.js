@@ -26,8 +26,11 @@ export const fullShortTime = (value) => _fullFmt.format(new Date(value));
 // Format a cost-trend period string (YYYY-MM-DD, YYYY-WNN, or YYYY-MM) into a compact label.
 const _monthFmt = new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" });
 const _monthYearFmt = new Intl.DateTimeFormat("zh-CN", { month: "short", year: "numeric" });
+const _periodHourFmt = new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", hour: "2-digit" });
 export const periodLabel = (period) => {
   var s = String(period || "");
+  // YYYY-MM-DDTHH → e.g. "9月1日 14:00"（小时粒度周期）
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}$/.test(s)) return _periodHourFmt.format(new Date(s + ":00:00+08:00"));
   // YYYY-MM-DD → e.g. "7月21日"
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return _monthFmt.format(new Date(s + "T00:00:00"));
   // YYYY-WNN → "W28"

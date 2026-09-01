@@ -490,6 +490,8 @@ func (r *Repository) CostTrends(ctx context.Context, opts ListOptions, period st
 	// Shift to local timezone (UTC+8) for correct day grouping
 	var dateFormat string
 	switch period {
+	case "hour":
+		dateFormat = `strftime('%Y-%m-%dT%H', datetime(l.started_at, '+8 hours'))`
 	case "week":
 		dateFormat = `strftime('%Y-W%W', datetime(l.started_at, '+8 hours'))`
 	case "month":
