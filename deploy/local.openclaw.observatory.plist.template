@@ -8,6 +8,8 @@
     <string>__BIN__</string>
     <string>--listen</string><string>127.0.0.1:10087</string>
     <string>--sample-interval</string><string>15s</string>
+    <string>--retention-all-days</string><string>30</string>
+    <string>--gateway-probe-timeout</string><string>10s</string>
   </array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

@@ -351,3 +351,55 @@ func TestV3AnalyticsRoutes(t *testing.T) {
 		t.Fatalf("invalid bucket returned %d: %s", res.Code, res.Body.String())
 	}
 }
+
+func TestCostTrendOptionsFollowsRequestedRange(t *testing.T) {
+	base := storage.ListOptions{InstanceID: "i", AgentID: "a"}
+	parse := func(from, to string) storage.ListOptions {
+		o := base
+		o.From, o.To = from, to
+		return o
+	}
+	now := time.Now().UTC()
+	cases := []struct {
+		name   string
+		from   time.Time
+		to     time.Time
+		period string
+	}{
+		{"1h filter → hour", now.Add(-1 * time.Hour), now, "hour"},
+		{"6h filter → hour", now.Add(-6 * time.Hour), now, "hour"},
+		{"24h filter → hour", now.Add(-24 * time.Hour), now, "hour"},
+		{"48h boundary → hour", now.Add(-48 * time.Hour), now, "hour"},
+		{"7d filter → day", now.AddDate(0, 0, -7), now, "day"},
+		{"30d filter → day", now.AddDate(0, 0, -30), now, "day"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := parse(tc.from.Format(time.RFC3339), tc.to.Format(time.RFC3339))
+			got, period := costTrendOptions(o)
+			if period != tc.period {
+				t.Fatalf("period = %q, want %q", period, tc.period)
+			}
+			if got.From != o.From || got.To != o.To {
+				t.Fatalf("range was rewritten: got %s..%s, want %s..%s", got.From, got.To, o.From, o.To)
+			}
+			if got.InstanceID != base.InstanceID || got.AgentID != base.AgentID {
+				t.Fatalf("filters dropped: %+v", got)
+			}
+		})
+	}
+	t.Run("unparsable range falls back to rolling 7d", func(t *testing.T) {
+		got, period := costTrendOptions(base)
+		if period != "day" {
+			t.Fatalf("period = %q, want day", period)
+		}
+		to, err := time.Parse(time.RFC3339Nano, got.To)
+		if err != nil || time.Since(to) > time.Minute {
+			t.Fatalf("fallback To not anchored to now: %v (%v)", got.To, err)
+		}
+		from, err := time.Parse(time.RFC3339Nano, got.From)
+		if err != nil || to.Sub(from).Round(time.Hour) != 6*24*time.Hour {
+			t.Fatalf("fallback window not 6 days: %v (%v)", to.Sub(from), err)
+		}
+	})
+}
